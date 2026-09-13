@@ -20,6 +20,7 @@ __all__ = [
     "screen_not_eq",
     "state_changed",
     "state_eq",
+    "state_transition",
     "storage_delta",
     "verify_required",
 ]
@@ -106,8 +107,7 @@ def counter_eq(counter: str, expected: int) -> StatePredicate:
 
 def counter_delta(counter: str, minimum: int, maximum: int) -> DiffPredicate:
     def check(
-        before: Mapping[str, Any],
-        after: Mapping[str, Any],
+        before: Mapping[str, Any], after: Mapping[str, Any]
     ) -> CheckResult:
         if counter not in before or counter not in after:
             return CheckResult(Verdict.UNKNOWN, f"counter missing: {counter}")
@@ -131,8 +131,7 @@ def storage_delta(minimum: int, maximum: int) -> DiffPredicate:
 
 def state_changed(path: str) -> DiffPredicate:
     def check(
-        before: Mapping[str, Any],
-        after: Mapping[str, Any],
+        before: Mapping[str, Any], after: Mapping[str, Any]
     ) -> CheckResult:
         before_found, before_value = _lookup(before, path)
         after_found, after_value = _lookup(after, path)
@@ -144,6 +143,28 @@ def state_changed(path: str) -> DiffPredicate:
                 f"{path} changed from {before_value!r} to {after_value!r}",
             )
         return CheckResult(Verdict.FAIL, f"{path} did not change")
+
+    return check
+
+
+def state_transition(path: str, before_expected: Any, after_expected: Any) -> DiffPredicate:
+    def check(
+        before: Mapping[str, Any], after: Mapping[str, Any]
+    ) -> CheckResult:
+        before_found, before_value = _lookup(before, path)
+        after_found, after_value = _lookup(after, path)
+        if not before_found or not after_found:
+            return CheckResult(Verdict.UNKNOWN, f"state path missing: {path}")
+        if before_value == before_expected and after_value == after_expected:
+            return CheckResult(
+                Verdict.PASS,
+                f"{path}: {before_expected!r} -> {after_expected!r}",
+            )
+        return CheckResult(
+            Verdict.FAIL,
+            f"{path}: {before_value!r} -> {after_value!r}, expected "
+            f"{before_expected!r} -> {after_expected!r}",
+        )
 
     return check
 
@@ -164,8 +185,7 @@ def any_of(*predicates: StatePredicate) -> StatePredicate:
 
 def all_diff(*predicates: DiffPredicate) -> DiffPredicate:
     def check(
-        before: Mapping[str, Any],
-        after: Mapping[str, Any],
+        before: Mapping[str, Any], after: Mapping[str, Any]
     ) -> CheckResult:
         return _combine_results(predicate(before, after) for predicate in predicates)
 
@@ -174,8 +194,7 @@ def all_diff(*predicates: DiffPredicate) -> DiffPredicate:
 
 def any_diff(*predicates: DiffPredicate) -> DiffPredicate:
     def check(
-        before: Mapping[str, Any],
-        after: Mapping[str, Any],
+        before: Mapping[str, Any], after: Mapping[str, Any]
     ) -> CheckResult:
         return _combine_any(predicate(before, after) for predicate in predicates)
 
