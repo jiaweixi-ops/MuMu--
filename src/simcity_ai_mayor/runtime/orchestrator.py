@@ -17,7 +17,13 @@ from simcity_ai_mayor.core.models import (
     V0Policy,
 )
 from simcity_ai_mayor.device.command_queue import QueueBoundAdbWriter
-from simcity_ai_mayor.executor.keeper import ActionRequest, Decision, Keeper, KeeperDecision
+from simcity_ai_mayor.executor.keeper import (
+    ActionRequest,
+    Decision,
+    Keeper,
+    KeeperDecision,
+    ReasonCode,
+)
 from simcity_ai_mayor.runtime.emergency_stop import EmergencyStop, EmergencyStopLatched
 from simcity_ai_mayor.runtime.metrics import RuntimeMetrics
 from simcity_ai_mayor.verifier.predicates import CheckResult, DiffPredicate, Verdict
@@ -130,8 +136,17 @@ class PlannedAction:
     acceptance_event: AcceptanceEvent = AcceptanceEvent.NONE
 
 
+@dataclass(frozen=True, slots=True)
+class PlanningResult:
+    action: PlannedAction | None
+    state: AutomationState
+    reason: str
+
+
 class Planner(Protocol):
-    def plan(self, observation: Observation) -> PlannedAction | None: ...
+    def plan(
+        self, observation: Observation
+    ) -> PlannedAction | PlanningResult | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,13 +174,17 @@ class V0Orchestrator:
         emergency_stop: EmergencyStop | None = None,
         action_timeout_seconds: float = 15.0,
         sleeper: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
         backoff_policy: LoopBackoffPolicy | None = None,
         v0_policy: V0Policy | None = None,
+        retry_limit_cooldown_seconds: float = 120.0,
     ) -> None:
         if not device_id.strip():
             raise ValueError("device_id is required")
         if action_timeout_seconds <= 0:
             raise ValueError("action_timeout_seconds must be > 0")
+        if retry_limit_cooldown_seconds <= 0:
+            raise ValueError("retry_limit_cooldown_seconds must be > 0")
         for component_name, component_device_id in (
             ("keeper", keeper.device_id),
             ("writer", writer.device_id),
@@ -186,8 +205,10 @@ class V0Orchestrator:
         self.emergency_stop = emergency_stop
         self.action_timeout_seconds = action_timeout_seconds
         self.sleeper = sleeper
+        self.clock = clock
         self.backoff_policy = backoff_policy or LoopBackoffPolicy()
         self.v0_policy = v0_policy or V0Policy()
+        self.retry_limit_cooldown_seconds = retry_limit_cooldown_seconds
         self._blocked_storage_recovery_pending = False
 
     def run_once(self) -> CycleResult:
@@ -207,14 +228,21 @@ class V0Orchestrator:
 
         self.metrics.tick(AutomationState.PLAN)
         try:
-            action = self.planner.plan(before)
+            planned = self.planner.plan(before)
         except KeyboardInterrupt as exc:
             return self._handle_keyboard_interrupt(exc, before=before)
         except Exception as exc:
             return self._phase_failure("plan", exc, before=before)
 
+        plan_state: AutomationState | None = None
+        if isinstance(planned, PlanningResult):
+            action = planned.action
+            plan_state = planned.state
+        else:
+            action = planned
+
         if action is None:
-            self.metrics.tick(before.automation_state)
+            self.metrics.tick(plan_state or before.automation_state)
             return CycleResult(CycleStatus.NO_ACTION, before=before)
 
         retry = action.retry or self.metrics.is_retry(action.task_id, action.name)
@@ -227,10 +255,8 @@ class V0Orchestrator:
             requires_premium_currency=action.requires_premium_currency,
             human_approved=action.human_approved,
         )
-        decision = self.keeper.evaluate(
-            request,
-            recent=self.metrics.rate_window(action.name, task_id=action.task_id),
-        )
+        recent = self.metrics.rate_window(action.name, task_id=action.task_id)
+        decision = self.keeper.evaluate(request, recent=recent)
         if decision.decision is Decision.NEEDS_HUMAN:
             self.metrics.tick(AutomationState.PAUSED)
             return CycleResult(
@@ -239,6 +265,14 @@ class V0Orchestrator:
                 keeper_decision=decision,
             )
         if not decision.allowed:
+            if (
+                decision.reason_code is ReasonCode.RETRY_LIMIT
+                and not recent.same_action_cooling_down
+            ):
+                self.metrics.start_action_cooldown(
+                    action.name,
+                    self.retry_limit_cooldown_seconds,
+                )
             self.metrics.tick(before.automation_state)
             return CycleResult(
                 CycleStatus.DENIED,
@@ -377,6 +411,7 @@ class V0Orchestrator:
         max_cycles: int | None = None,
         idle_sleep_seconds: float = 0.5,
         max_consecutive_loop_errors: int = 5,
+        duration_seconds: float | None = None,
     ) -> CycleResult | None:
         if max_cycles is not None and max_cycles <= 0:
             raise ValueError("max_cycles must be > 0 when provided")
@@ -384,7 +419,10 @@ class V0Orchestrator:
             raise ValueError("idle_sleep_seconds must be >= 0")
         if max_consecutive_loop_errors <= 0:
             raise ValueError("max_consecutive_loop_errors must be > 0")
+        if duration_seconds is not None and duration_seconds <= 0:
+            raise ValueError("duration_seconds must be > 0 when provided")
 
+        deadline = None if duration_seconds is None else self.clock() + duration_seconds
         last_result: CycleResult | None = None
         completed = 0
         consecutive_failures = 0
@@ -395,7 +433,7 @@ class V0Orchestrator:
             CycleStatus.VERIFICATION_FAILED,
             CycleStatus.OBSERVE_FAILED,
         }
-        while max_cycles is None or completed < max_cycles:
+        while self._may_continue(completed, max_cycles, deadline):
             try:
                 last_result = self.run_once()
                 completed += 1
@@ -411,8 +449,7 @@ class V0Orchestrator:
                     base_seconds=idle_sleep_seconds,
                     consecutive_failures=consecutive_failures,
                 )
-                if delay:
-                    self.sleeper(delay)
+                self._sleep_until_next_cycle(delay, deadline)
             except KeyboardInterrupt as exc:
                 last_result = self._handle_keyboard_interrupt(exc)
                 break
@@ -442,15 +479,52 @@ class V0Orchestrator:
                     base_seconds=idle_sleep_seconds,
                     consecutive_failures=consecutive_failures,
                 )
-                if delay:
-                    try:
-                        self.sleeper(delay)
-                    except KeyboardInterrupt as interrupt:
-                        last_result = self._handle_keyboard_interrupt(interrupt)
-                        break
-                    except Exception:
-                        pass
+                try:
+                    self._sleep_until_next_cycle(delay, deadline)
+                except KeyboardInterrupt as interrupt:
+                    last_result = self._handle_keyboard_interrupt(interrupt)
+                    break
+                except Exception:
+                    pass
         return last_result
+
+    def run_for(
+        self,
+        duration_seconds: float,
+        *,
+        idle_sleep_seconds: float = 0.5,
+        max_consecutive_loop_errors: int = 5,
+    ) -> CycleResult | None:
+        if duration_seconds <= 0:
+            raise ValueError("duration_seconds must be > 0")
+        try:
+            return self.run(
+                idle_sleep_seconds=idle_sleep_seconds,
+                max_consecutive_loop_errors=max_consecutive_loop_errors,
+                duration_seconds=duration_seconds,
+            )
+        finally:
+            self.metrics.tick(AutomationState.STOPPED)
+            self.metrics.flush()
+
+    def _may_continue(
+        self,
+        completed: int,
+        max_cycles: int | None,
+        deadline: float | None,
+    ) -> bool:
+        if max_cycles is not None and completed >= max_cycles:
+            return False
+        return deadline is None or self.clock() < deadline
+
+    def _sleep_until_next_cycle(self, delay: float, deadline: float | None) -> None:
+        if delay <= 0:
+            return
+        if deadline is not None:
+            remaining = max(0.0, deadline - self.clock())
+            delay = min(delay, remaining)
+        if delay > 0:
+            self.sleeper(delay)
 
     def _check_emergency_stop(
         self,
