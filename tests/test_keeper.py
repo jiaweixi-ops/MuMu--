@@ -21,7 +21,7 @@ def test_keeper_screen_policy_is_fail_closed(screen: ScreenType) -> None:
         risk=RiskLevel.L0,
         screen=screen,
     )
-    result = keeper.evaluate(request, now=0.0, recent=RateWindow())
+    result = keeper.evaluate(request, recent=RateWindow())
     assert result.allowed is (screen in ACTIONABLE_SCREENS)
     if screen not in ACTIONABLE_SCREENS:
         assert result.reason_code is ReasonCode.SCREEN_NOT_ACTIONABLE
@@ -36,7 +36,7 @@ def test_assist_requires_explicit_human_approval() -> None:
         risk=RiskLevel.L1,
         screen=ScreenType.FACTORY,
     )
-    pending = keeper.evaluate(request, now=0.0, recent=RateWindow())
+    pending = keeper.evaluate(request, recent=RateWindow())
     assert pending.decision is Decision.NEEDS_HUMAN
 
     approved = keeper.evaluate(
@@ -48,7 +48,6 @@ def test_assist_requires_explicit_human_approval() -> None:
             screen=request.screen,
             human_approved=True,
         ),
-        now=0.0,
         recent=RateWindow(),
     )
     assert approved.decision is Decision.ALLOW
@@ -64,7 +63,7 @@ def test_auto_l3_still_requires_human_then_allows_approved_replay() -> None:
         screen=ScreenType.STORAGE,
     )
 
-    pending = keeper.evaluate(request, now=0.0, recent=RateWindow())
+    pending = keeper.evaluate(request, recent=RateWindow())
     assert pending.decision is Decision.NEEDS_HUMAN
     assert pending.reason_code is ReasonCode.RISK_REQUIRES_HUMAN
 
@@ -77,7 +76,6 @@ def test_auto_l3_still_requires_human_then_allows_approved_replay() -> None:
             screen=request.screen,
             human_approved=True,
         ),
-        now=0.0,
         recent=RateWindow(),
     )
     assert approved.decision is Decision.ALLOW
@@ -94,7 +92,6 @@ def test_keeper_rejects_device_mismatch() -> None:
             risk=RiskLevel.L0,
             screen=ScreenType.CITY,
         ),
-        now=0.0,
         recent=RateWindow(),
     )
     assert result.decision is Decision.DENY
