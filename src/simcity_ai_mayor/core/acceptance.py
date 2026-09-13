@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 
 from simcity_ai_mayor.core.models import FactoryState
 
-
 REQUIRED_TRANSITION_PAIRS: tuple[tuple[FactoryState, FactoryState], ...] = (
     (FactoryState.IDLE, FactoryState.PRODUCING),
     (FactoryState.PRODUCING, FactoryState.COMPLETED_COLLECTABLE),

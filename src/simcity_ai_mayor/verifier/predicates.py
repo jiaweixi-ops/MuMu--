@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-
 __all__ = [
     "CheckResult",
     "DiffPredicate",

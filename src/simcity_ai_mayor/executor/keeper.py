@@ -6,7 +6,6 @@ from typing import Final
 
 from simcity_ai_mayor.core.models import RiskLevel, RunMode, ScreenType
 
-
 ACTIONABLE_SCREENS: Final[frozenset[ScreenType]] = frozenset(
     {
         ScreenType.CITY,

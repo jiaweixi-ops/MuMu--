@@ -8,7 +8,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
