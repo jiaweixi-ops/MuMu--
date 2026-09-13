@@ -7,6 +7,8 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any
 
+from simcity_ai_mayor.device.adb import AdbRunner, _ADB_WRITE_CAPABILITY
+
 
 class CommandQueueClosed(RuntimeError):
     pass
@@ -142,3 +144,61 @@ class DeviceCommandQueue:
             self._cancel_requested.set()
         self._queue.put(None)
         self._worker.join(timeout=5.0)
+
+
+class QueueBoundAdbWriter:
+    """Only supported high-level path for ADB input writes."""
+
+    def __init__(self, runner: AdbRunner, command_queue: DeviceCommandQueue) -> None:
+        if runner.device_id != command_queue.device_id:
+            raise ValueError("runner and command_queue must target the same device_id")
+        self.runner = runner
+        self.command_queue = command_queue
+
+    @property
+    def device_id(self) -> str:
+        return self.runner.device_id
+
+    def tap(self, x: int, y: int) -> Future[Any]:
+        return self.command_queue.submit(
+            self.runner.tap,
+            x,
+            y,
+            _write_capability=_ADB_WRITE_CAPABILITY,
+        )
+
+    def swipe(
+        self,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        duration_ms: int = 350,
+    ) -> Future[Any]:
+        return self.command_queue.submit(
+            self.runner.swipe,
+            x1,
+            y1,
+            x2,
+            y2,
+            duration_ms,
+            _write_capability=_ADB_WRITE_CAPABILITY,
+        )
+
+    def back(self) -> Future[Any]:
+        return self.command_queue.submit(
+            self.runner.back,
+            _write_capability=_ADB_WRITE_CAPABILITY,
+        )
+
+    def recover_adb_server(
+        self,
+        *,
+        connect_target: str | None = None,
+        wait_seconds: float = 10.0,
+    ) -> Future[Any]:
+        return self.command_queue.submit(
+            self.runner.recover_adb_server,
+            connect_target=connect_target,
+            wait_seconds=wait_seconds,
+        )
