@@ -12,13 +12,15 @@ MuMu 模拟器上的《模拟城市：我是市长》自动化工程。
 - Keeper 对页面采用**白名单**：新增 `ScreenType` 默认拒绝。
 - `device_id` 贯穿 ActionRequest、ADB、数据库和运行时状态。
 - 同一设备只有一个有界 ADB 写队列，并维护单调 `seq`。
+- 业务 ADB 输入只能经 `QueueBoundAdbWriter` 进入写队列；直接 `tap/swipe/back` 会被拒绝。
 - ADB 命令有硬超时；重启 adb-server 后 TCP MuMu 设备必须重新 `connect` 并等待上线。
 - V0 仓库 OCR 的 `confidence` 默认是 `0.0`；未显式给出可信度即视为不可信。
 - V0 默认逐件收取；批量收取留到 V1。
 - `WAIT_SESSION_CAP`、`WAIT_STORAGE_RESERVE`、`WAIT_OCR_UNTRUSTED` 语义分离。
 - session cap 与 V0 Acceptance 覆盖度均持久化到 SQLite，重启不能绕过额度或清空验收覆盖。
+- 每个 `device_id` 同时只允许一个 `RuntimeMetrics` owner；SQLite lease 防止多实例静默覆盖。
 - `ASSIST` 使用 `NEEDS_HUMAN`，人工批准后仍必须重新经过 Keeper 其余硬门禁。
-- Verifier 保留 `UNKNOWN`；只有 `PASS` 能推进 Task。
+- Verifier 保留 `UNKNOWN`；只有 `PASS` 能推进 Task，并保留全部失败原因用于复盘。
 - 急停通道健康状态必须可见；`stop.flag` 使用绝对路径。
 - 不设计反检测或规避平台风控能力。
 
@@ -63,7 +65,8 @@ python -m simcity_ai_mayor.phase1.probe ^
 ```
 
 探测器自动记录 Android 版本、SDK、方向相关 dump、截图尺寸漂移、游戏版本、
-冻结帧比例和黑屏比例。MuMu 应用版本、窗口/DPI/RDP 行为仍需人工复核并进入基线文档。
+冻结帧比例和黑屏比例。长窗口观察采用流式统计，不保留全部帧哈希。MuMu 应用版本、
+窗口/DPI/RDP 行为仍需人工复核并进入基线文档。
 
 ## V0 Gate
 
@@ -77,9 +80,18 @@ V0 验收不是“没有报错”即可通过，默认同时要求：
 - 人工清库后成功重新 Observe/Plan；
 - 误购、误售、高级货币消费、无限循环、旧状态动作、ADB 写入乱序均为 `0`。
 
-`RuntimeMetrics` 使用 `time.monotonic()` 累加有效运行时间，维护 60 秒动作速率与 5 分钟
-失败窗口，并定期把 Acceptance tracker 写入同一个 SQLite Store。程序重启只会丢失最近一次
-持久化间隔内尚未 flush 的少量时间，不会把整轮验收覆盖度清零。
+`RuntimeMetrics` 使用 `time.monotonic()` 累加有效运行时间，维护固定的 60 秒动作速率窗口
+和固定的 300 秒失败率窗口，并定期把 Acceptance tracker 写入同一个 SQLite Store。
+`event_retention_seconds` 只控制事件保留量，不改变“5 分钟失败率”的语义。
+
+计时口径固定如下：
+
+- `WAIT_SESSION_CAP` **计入**有效运行时间：这是 V0 的设计终态，不需要人工干预；
+- `BLOCKED_STORAGE` **不计入**有效运行时间，但单独累计 `blocked_storage_seconds`；
+- `PAUSED / EMERGENCY_STOP / STOPPED` 同样不计入有效运行时间。
+
+每个 `device_id` 同一时刻只允许一个 `RuntimeMetrics` owner。owner 通过 SQLite lease 周期续租；
+异常退出后 lease 到期可被新进程接管，从而避免两个进程互相覆盖 Acceptance 行。
 
 ## 测试
 

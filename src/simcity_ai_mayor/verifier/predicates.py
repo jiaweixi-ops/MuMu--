@@ -183,12 +183,16 @@ def any_diff(*predicates: DiffPredicate) -> DiffPredicate:
 
 
 def _combine_results(results: Iterable[CheckResult]) -> CheckResult:
+    failures: list[str] = []
     unknowns: list[str] = []
     for result in results:
         if result.verdict is Verdict.FAIL:
-            return result
-        if result.verdict is Verdict.UNKNOWN:
+            failures.append(result.reason)
+        elif result.verdict is Verdict.UNKNOWN:
             unknowns.append(result.reason)
+    if failures:
+        reasons = [*failures, *unknowns]
+        return CheckResult(Verdict.FAIL, "; ".join(reasons))
     if unknowns:
         return CheckResult(Verdict.UNKNOWN, "; ".join(unknowns))
     return CheckResult(Verdict.PASS, "all predicates passed")
@@ -211,12 +215,16 @@ def _combine_any(results: Iterable[CheckResult]) -> CheckResult:
 
 def verify_required(results: Iterable[CheckResult]) -> CheckResult:
     """Preserve UNKNOWN while enforcing the rule that only PASS may advance."""
+    failures: list[str] = []
     unknowns: list[str] = []
     for result in results:
         if result.verdict is Verdict.FAIL:
-            return result
-        if result.verdict is Verdict.UNKNOWN:
+            failures.append(result.reason)
+        elif result.verdict is Verdict.UNKNOWN:
             unknowns.append(result.reason)
+    if failures:
+        reasons = [*failures, *unknowns]
+        return CheckResult(Verdict.FAIL, "; ".join(reasons))
     if unknowns:
         return CheckResult(Verdict.UNKNOWN, "; ".join(unknowns))
     return CheckResult(Verdict.PASS, "all required checks passed")

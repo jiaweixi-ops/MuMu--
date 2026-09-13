@@ -1,4 +1,5 @@
 from simcity_ai_mayor.verifier.predicates import (
+    CheckResult,
     Verdict,
     all_diff,
     all_of,
@@ -37,3 +38,17 @@ def test_composable_diff_predicates() -> None:
     before = {"storage_used": 20, "factory": {"state": "COMPLETED_COLLECTABLE"}}
     after = {"storage_used": 21, "factory": {"state": "IDLE"}}
     assert predicate(before, after).verdict is Verdict.PASS
+
+
+def test_verify_required_collects_all_failure_reasons() -> None:
+    result = verify_required(
+        [
+            CheckResult(Verdict.FAIL, "first failure"),
+            CheckResult(Verdict.UNKNOWN, "missing signal"),
+            CheckResult(Verdict.FAIL, "second failure"),
+        ]
+    )
+    assert result.verdict is Verdict.FAIL
+    assert "first failure" in result.reason
+    assert "second failure" in result.reason
+    assert "missing signal" in result.reason

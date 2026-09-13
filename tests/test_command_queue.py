@@ -1,9 +1,11 @@
 import pytest
 
+from simcity_ai_mayor.device.adb import AdbRunner
 from simcity_ai_mayor.device.command_queue import (
     CommandCancelled,
     CommandQueueClosed,
     DeviceCommandQueue,
+    QueueBoundAdbWriter,
 )
 
 
@@ -33,3 +35,22 @@ def test_close_rejects_future_submissions() -> None:
     command_queue.close()
     with pytest.raises(CommandQueueClosed):
         command_queue.submit(lambda: 123)
+
+
+def test_queue_bound_writer_is_the_supported_input_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = AdbRunner("mumu-0")
+    command_queue = DeviceCommandQueue("mumu-0")
+    writer = QueueBoundAdbWriter(runner, command_queue)
+    seen: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+    def fake_shell(*args: str, **kwargs: object) -> None:
+        seen.append((args, kwargs))
+
+    monkeypatch.setattr(runner, "shell", fake_shell)
+    writer.tap(100, 200).result(timeout=2)
+
+    assert seen[0][0] == ("input", "tap", "100", "200")
+    assert "_write_capability" in seen[0][1]
+    command_queue.close()

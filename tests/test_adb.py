@@ -5,7 +5,12 @@ from collections import deque
 
 import pytest
 
-from simcity_ai_mayor.device.adb import PNG_SIGNATURE, AdbRunner, AdbTimeout
+from simcity_ai_mayor.device.adb import (
+    PNG_SIGNATURE,
+    AdbRunner,
+    AdbTimeout,
+    AdbWriteBypass,
+)
 
 
 class FakeProcess:
@@ -93,3 +98,11 @@ def test_screenshot_retries_invalid_png(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr("time.sleep", lambda _: None)
     adb = AdbRunner("mumu-0", screenshot_retries=1)
     assert adb.screenshot_png().startswith(PNG_SIGNATURE)
+
+
+def test_direct_input_write_is_rejected() -> None:
+    adb = AdbRunner("mumu-0")
+    with pytest.raises(AdbWriteBypass, match="QueueBoundAdbWriter"):
+        adb.tap(100, 200)
+    with pytest.raises(AdbWriteBypass, match="QueueBoundAdbWriter"):
+        adb.shell("input", "tap", "100", "200")
