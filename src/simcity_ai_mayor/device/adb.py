@@ -67,11 +67,16 @@ class AdbRunner:
         timeout_seconds: float | None = None,
         check: bool = True,
         device_scoped: bool = True,
+        _write_capability: object | None = None,
     ) -> AdbResult:
+        raw_args = list(args)
+        if len(raw_args) >= 2 and raw_args[0] == "shell" and raw_args[1] == "input":
+            self._require_write_capability(_write_capability)
+
         cmd = [self.adb_path]
         if device_scoped:
             cmd += ["-s", self.device_id]
-        cmd += list(args)
+        cmd += raw_args
 
         timeout = self.timeout_seconds if timeout_seconds is None else timeout_seconds
         if timeout <= 0:
@@ -117,7 +122,11 @@ class AdbRunner:
     ) -> AdbResult:
         if args and args[0] == "input":
             self._require_write_capability(_write_capability)
-        return self.run(["shell", *args], timeout_seconds=timeout_seconds)
+        return self.run(
+            ["shell", *args],
+            timeout_seconds=timeout_seconds,
+            _write_capability=_write_capability,
+        )
 
     def tap(
         self,
