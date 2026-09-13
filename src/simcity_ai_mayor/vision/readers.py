@@ -197,7 +197,7 @@ class _LoadedAnchor:
                 f"template {path} size {template.size} != ROI size {expected}"
             )
         self.template = template
-        self._template_pixels = tuple(float(value) for value in template.getdata())
+        self._template_pixels = tuple(float(value) for value in template.tobytes())
         self._template_mean = fsum(self._template_pixels) / len(self._template_pixels)
         self._template_centered = tuple(
             value - self._template_mean for value in self._template_pixels
@@ -207,7 +207,7 @@ class _LoadedAnchor:
     def score(self, image: Image.Image) -> float:
         """Return zero-mean normalized cross-correlation in the [0, 1] range."""
         sample = self.spec.roi.crop(image).convert("L")
-        sample_pixels = tuple(float(value) for value in sample.getdata())
+        sample_pixels = tuple(float(value) for value in sample.tobytes())
         sample_mean = fsum(sample_pixels) / len(sample_pixels)
         sample_centered = tuple(value - sample_mean for value in sample_pixels)
         sample_energy = fsum(value * value for value in sample_centered)
