@@ -205,7 +205,11 @@ class _LoadedAnchor:
 
 
 class _LoadedRule:
-    def __init__(self, value: ScreenType | FactoryState, anchors: Sequence[TemplateAnchorSpec]) -> None:
+    def __init__(
+        self,
+        value: ScreenType | FactoryState,
+        anchors: Sequence[TemplateAnchorSpec],
+    ) -> None:
         self.value = value
         self.anchors = tuple(_LoadedAnchor(anchor) for anchor in anchors)
 
