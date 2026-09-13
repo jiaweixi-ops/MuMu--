@@ -1,0 +1,95 @@
+{
+  "device_id": "127.0.0.1:7555",
+  "package_name": "<REAL_SIMCITY_PACKAGE>",
+  "adb_path": "adb",
+  "state_db": "../data/runtime/state.db",
+  "data_root": "../data",
+  "run_mode": "DRY_RUN",
+  "duration_seconds": 14400,
+  "idle_sleep_seconds": 0.5,
+  "action_timeout_seconds": 15.0,
+  "expected_size": [1280, 720],
+  "expected_game_version": null,
+  "policy": {
+    "collect_safety_margin": 2,
+    "reserve_free_ratio": 0.1,
+    "reserve_free_min": 10,
+    "max_total_session_output": 12,
+    "max_item_session_output": 8,
+    "min_ocr_confidence": 0.99
+  },
+  "vision": {
+    "screen_ambiguity_margin": 0.02,
+    "factory_ambiguity_margin": 0.02,
+    "screens": [
+      {
+        "screen": "FACTORY",
+        "anchors": [
+          {
+            "roi": [0, 0, 100, 60],
+            "template": "../data/phase_minus1/templates/factory_anchor.png",
+            "threshold": 0.92,
+            "weight": 1.0
+          }
+        ]
+      }
+    ],
+    "storage": {
+      "roi": [0, 0, 160, 48],
+      "screens": ["FACTORY", "STORAGE"]
+    },
+    "factory_states": [
+      {
+        "state": "IDLE",
+        "anchors": [
+          {
+            "roi": [0, 0, 100, 60],
+            "template": "../data/phase_minus1/templates/factory_idle.png",
+            "threshold": 0.92,
+            "weight": 1.0
+          }
+        ]
+      },
+      {
+        "state": "PRODUCING",
+        "anchors": [
+          {
+            "roi": [0, 0, 100, 60],
+            "template": "../data/phase_minus1/templates/factory_producing.png",
+            "threshold": 0.92,
+            "weight": 1.0
+          }
+        ]
+      },
+      {
+        "state": "COMPLETED_COLLECTABLE",
+        "anchors": [
+          {
+            "roi": [0, 0, 100, 60],
+            "template": "../data/phase_minus1/templates/factory_collectable.png",
+            "threshold": 0.92,
+            "weight": 1.0
+          }
+        ]
+      },
+      {
+        "state": "COMPLETED_STORAGE_BLOCKED",
+        "anchors": [
+          {
+            "roi": [0, 0, 100, 60],
+            "template": "../data/phase_minus1/templates/factory_storage_blocked.png",
+            "threshold": 0.92,
+            "weight": 1.0
+          }
+        ]
+      }
+    ]
+  },
+  "planner": {
+    "collect_tap": [0, 0],
+    "production": {
+      "item": "metal",
+      "tap": [0, 0]
+    }
+  }
+}
