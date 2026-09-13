@@ -121,7 +121,7 @@ def test_fixed_anchor_screen_classifier_tolerates_linear_brightness_change(
 
     shifted = Image.new("L", template.size)
     shifted.putdata(
-        [min(255, int(value * 0.75 + 45)) for value in template.getdata()]
+        [min(255, int(value * 0.75 + 45)) for value in template.tobytes()]
     )
     frame = Image.new("L", (30, 30), 0)
     frame.paste(shifted, (5, 5))
