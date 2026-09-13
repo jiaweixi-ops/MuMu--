@@ -165,6 +165,9 @@ class QueueBoundAdbWriter:
     def clear_cancel(self) -> None:
         self.command_queue.clear_cancel()
 
+    def drain(self) -> None:
+        self.command_queue.drain()
+
     def tap(self, x: int, y: int) -> Future[Any]:
         return self.command_queue.submit(
             self.runner.tap,
