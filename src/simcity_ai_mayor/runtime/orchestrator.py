@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping
-from concurrent.futures import Future
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol
@@ -18,6 +18,8 @@ from simcity_ai_mayor.executor.keeper import ActionRequest, Decision, Keeper, Ke
 from simcity_ai_mayor.runtime.emergency_stop import EmergencyStop, EmergencyStopLatched
 from simcity_ai_mayor.runtime.metrics import RuntimeMetrics
 from simcity_ai_mayor.verifier.predicates import CheckResult, DiffPredicate, Verdict
+
+MANUAL_CLEAR_MIN_CONFIDENCE = 0.99
 
 
 class AcceptanceEvent(StrEnum):
@@ -120,6 +122,7 @@ class V0Orchestrator:
         self.emergency_stop = emergency_stop
         self.action_timeout_seconds = action_timeout_seconds
         self.sleeper = sleeper
+        self._last_observed_automation_state: AutomationState | None = None
 
     def run_once(self) -> CycleResult:
         stopped = self._check_emergency_stop()
@@ -170,9 +173,23 @@ class V0Orchestrator:
             return stopped
 
         self.metrics.tick(AutomationState.EXECUTE)
+        future: Future[Any] | None = None
         try:
             future = action.execute(self.writer)
             future.result(timeout=self.action_timeout_seconds)
+        except FutureTimeoutError as exc:
+            if future is not None:
+                future.cancel()
+            self.writer.request_cancel()
+            self.writer.drain()
+            self.metrics.record_action(action.name, success=False, retry=action.retry)
+            self.metrics.tick(AutomationState.RECOVER)
+            return CycleResult(
+                CycleStatus.EXECUTION_FAILED,
+                before=before,
+                keeper_decision=decision,
+                error=f"{type(exc).__name__}: action timed out; ADB writer cancelled and drained",
+            )
         except BaseException as exc:
             self.metrics.record_action(action.name, success=False, retry=action.retry)
             self.metrics.tick(AutomationState.RECOVER)
@@ -224,10 +241,11 @@ class V0Orchestrator:
 
         last_result: CycleResult | None = None
         completed = 0
+        stop_statuses = {CycleStatus.EMERGENCY_STOP, CycleStatus.NEEDS_HUMAN}
         while max_cycles is None or completed < max_cycles:
             last_result = self.run_once()
             completed += 1
-            if last_result.status is CycleStatus.EMERGENCY_STOP:
+            if last_result.status in stop_statuses:
                 break
             if idle_sleep_seconds:
                 self.sleeper(idle_sleep_seconds)
@@ -259,8 +277,30 @@ class V0Orchestrator:
             )
 
     def _record_special_state(self, observation: Observation) -> None:
-        if observation.automation_state is AutomationState.BLOCKED_STORAGE:
+        previous = self._last_observed_automation_state
+        current = observation.automation_state
+        if current is AutomationState.BLOCKED_STORAGE:
             self.metrics.mark_blocked_storage_detected()
+        elif (
+            previous is AutomationState.BLOCKED_STORAGE
+            and self._has_trusted_free_storage(observation)
+        ):
+            self.metrics.mark_manual_clear_recovered()
+        self._last_observed_automation_state = current
+
+    @staticmethod
+    def _has_trusted_free_storage(observation: Observation) -> bool:
+        try:
+            used = int(observation.state["storage_used"])
+            capacity = int(observation.state["storage_capacity"])
+            confidence = float(observation.state["storage_confidence"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        return (
+            capacity > 0
+            and 0 <= used < capacity
+            and confidence >= MANUAL_CLEAR_MIN_CONFIDENCE
+        )
 
     def _record_acceptance_success(
         self,
