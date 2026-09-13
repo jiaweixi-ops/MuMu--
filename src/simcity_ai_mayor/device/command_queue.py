@@ -159,6 +159,12 @@ class QueueBoundAdbWriter:
     def device_id(self) -> str:
         return self.runner.device_id
 
+    def request_cancel(self) -> None:
+        self.command_queue.request_cancel()
+
+    def clear_cancel(self) -> None:
+        self.command_queue.clear_cancel()
+
     def tap(self, x: int, y: int) -> Future[Any]:
         return self.command_queue.submit(
             self.runner.tap,
