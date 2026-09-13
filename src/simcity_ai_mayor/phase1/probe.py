@@ -88,33 +88,40 @@ def _watch_frames(
         return 0, 0, 0.0, 0.0
 
     deadline = time.monotonic() + watch_seconds
-    hashes: list[str] = []
+    samples = 0
     black = 0
+    repeated = 0
+    longest = 0
+    current_run = 0
+    previous_hash: str | None = None
+
     while time.monotonic() < deadline:
         frame = adb.screenshot_png()
-        hashes.append(hashlib.sha256(frame).hexdigest())
+        current_hash = hashlib.sha256(frame).hexdigest()
+        samples += 1
         black += int(is_black_frame(frame))
+
+        if previous_hash is None:
+            current_run = 1
+            longest = 1
+        elif previous_hash == current_hash:
+            current_run += 1
+            repeated += 1
+            longest = max(longest, current_run)
+        else:
+            current_run = 1
+        previous_hash = current_hash
+
         remaining = deadline - time.monotonic()
         if remaining > 0:
             time.sleep(min(interval_seconds, remaining))
 
-    if not hashes:
+    if samples == 0:
         return 0, 0, 0.0, 0.0
 
-    longest = 1
-    current = 1
-    repeated = 0
-    for previous, current_hash in zip(hashes, hashes[1:], strict=False):
-        if previous == current_hash:
-            current += 1
-            repeated += 1
-            longest = max(longest, current)
-        else:
-            current = 1
-
-    stale_ratio = repeated / max(1, len(hashes) - 1)
-    black_ratio = black / len(hashes)
-    return len(hashes), longest, stale_ratio, black_ratio
+    stale_ratio = repeated / max(1, samples - 1)
+    black_ratio = black / samples
+    return samples, longest, stale_ratio, black_ratio
 
 
 def run_probe(
