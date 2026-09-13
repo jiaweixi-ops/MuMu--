@@ -40,9 +40,15 @@ class FakeRunner:
         self.taps.append((x, y))
 
 
-class SlowRunner(FakeRunner):
+class SlowOnceRunner(FakeRunner):
+    def __init__(self, device_id: str) -> None:
+        super().__init__(device_id)
+        self._slow_next = True
+
     def tap(self, x: int, y: int, *, _write_capability: object | None = None) -> None:
-        time.sleep(0.05)
+        if self._slow_next:
+            self._slow_next = False
+            time.sleep(0.05)
         super().tap(x, y, _write_capability=_write_capability)
 
 
@@ -54,6 +60,15 @@ class FakeObserver:
     def observe(self) -> Observation:
         self.calls += 1
         return self.observations.popleft()
+
+
+class InterruptingObserver:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def observe(self) -> Observation:
+        self.calls += 1
+        raise KeyboardInterrupt
 
 
 class FixedPlanner:
@@ -73,6 +88,20 @@ def make_collect_action() -> PlannedAction:
         execute=lambda writer: writer.tap(10, 20),
         verify=counter_delta("storage_used", 1, 1),
         acceptance_event=AcceptanceEvent.COLLECT,
+    )
+
+
+def make_interrupt_action() -> PlannedAction:
+    def execute(writer: QueueBoundAdbWriter):
+        del writer
+        raise KeyboardInterrupt
+
+    return PlannedAction(
+        task_id="interrupt-1",
+        name="interrupt",
+        risk=RiskLevel.L0,
+        execute=execute,
+        verify=counter_delta("storage_used", 1, 1),
     )
 
 
@@ -309,7 +338,7 @@ def test_run_stops_immediately_when_human_approval_is_required(tmp_path) -> None
     store.close()
 
 
-def test_action_timeout_cancels_and_drains_before_returning(tmp_path) -> None:
+def test_action_timeout_reopens_writer_for_next_cycle(tmp_path) -> None:
     store = SessionStore(tmp_path / "state.db")
     clock = FakeClock()
     metrics = RuntimeMetrics(
@@ -319,10 +348,14 @@ def test_action_timeout_cancels_and_drains_before_returning(tmp_path) -> None:
         lease_clock=clock,
         owner_id="orchestrator-test",
     )
-    runner = SlowRunner("mumu-0")
+    runner = SlowOnceRunner("mumu-0")
     command_queue = DeviceCommandQueue("mumu-0")
     writer = QueueBoundAdbWriter(runner, command_queue)
-    observer = FakeObserver(make_observation(10, FactoryState.COMPLETED_COLLECTABLE))
+    observer = FakeObserver(
+        make_observation(10, FactoryState.COMPLETED_COLLECTABLE),
+        make_observation(10, FactoryState.COMPLETED_COLLECTABLE),
+        make_observation(11, FactoryState.COLLECTED),
+    )
     orchestrator = V0Orchestrator(
         device_id="mumu-0",
         observer=observer,
@@ -333,13 +366,91 @@ def test_action_timeout_cancels_and_drains_before_returning(tmp_path) -> None:
         action_timeout_seconds=0.01,
     )
 
+    first = orchestrator.run_once()
+
+    assert first.status is CycleStatus.EXECUTION_FAILED
+    assert not writer.command_queue.cancel_requested
+    assert observer.calls == 1
+    assert runner.taps == [(10, 20)]
+    assert metrics.rate_window("collect").failures_5m == 1
+
+    second = orchestrator.run_once()
+
+    assert second.status is CycleStatus.VERIFIED
+    assert not writer.command_queue.cancel_requested
+    assert observer.calls == 3
+    assert runner.taps == [(10, 20), (10, 20)]
+
+    command_queue.close()
+    metrics.close()
+    store.close()
+
+
+def test_keyboard_interrupt_during_execute_latches_emergency_stop(tmp_path) -> None:
+    store = SessionStore(tmp_path / "state.db")
+    clock = FakeClock()
+    metrics = RuntimeMetrics(
+        device_id="mumu-0",
+        store=store,
+        clock=clock,
+        lease_clock=clock,
+        owner_id="orchestrator-test",
+    )
+    runner = FakeRunner("mumu-0")
+    command_queue = DeviceCommandQueue("mumu-0")
+    writer = QueueBoundAdbWriter(runner, command_queue)
+    observer = FakeObserver(make_observation(10, FactoryState.COMPLETED_COLLECTABLE))
+    orchestrator = V0Orchestrator(
+        device_id="mumu-0",
+        observer=observer,
+        planner=FixedPlanner(make_interrupt_action()),
+        keeper=Keeper(device_id="mumu-0", run_mode=RunMode.AUTO),
+        writer=writer,
+        metrics=metrics,
+    )
+
     result = orchestrator.run_once()
 
-    assert result.status is CycleStatus.EXECUTION_FAILED
+    assert result.status is CycleStatus.EMERGENCY_STOP
     assert writer.command_queue.cancel_requested
     assert observer.calls == 1
-    assert metrics.rate_window("collect").failures_5m == 1
-    writer.drain()
+    assert metrics.rate_window("interrupt").samples_5m == 0
+    assert "KeyboardInterrupt" in (result.error or "")
+
+    command_queue.close()
+    metrics.close()
+    store.close()
+
+
+def test_run_maps_observer_keyboard_interrupt_to_emergency_stop(tmp_path) -> None:
+    store = SessionStore(tmp_path / "state.db")
+    clock = FakeClock()
+    metrics = RuntimeMetrics(
+        device_id="mumu-0",
+        store=store,
+        clock=clock,
+        lease_clock=clock,
+        owner_id="orchestrator-test",
+    )
+    runner = FakeRunner("mumu-0")
+    command_queue = DeviceCommandQueue("mumu-0")
+    writer = QueueBoundAdbWriter(runner, command_queue)
+    observer = InterruptingObserver()
+    orchestrator = V0Orchestrator(
+        device_id="mumu-0",
+        observer=observer,
+        planner=FixedPlanner(None),
+        keeper=Keeper(device_id="mumu-0", run_mode=RunMode.AUTO),
+        writer=writer,
+        metrics=metrics,
+    )
+
+    result = orchestrator.run(max_cycles=3, idle_sleep_seconds=0.0)
+
+    assert result is not None
+    assert result.status is CycleStatus.EMERGENCY_STOP
+    assert writer.command_queue.cancel_requested
+    assert observer.calls == 1
 
     command_queue.close()
     metrics.close()
