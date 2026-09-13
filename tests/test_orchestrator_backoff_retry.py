@@ -1,6 +1,12 @@
 from collections import deque
 
-from simcity_ai_mayor.core.models import AutomationState, FactoryState, RiskLevel, RunMode, ScreenType
+from simcity_ai_mayor.core.models import (
+    AutomationState,
+    FactoryState,
+    RiskLevel,
+    RunMode,
+    ScreenType,
+)
 from simcity_ai_mayor.device.command_queue import DeviceCommandQueue, QueueBoundAdbWriter
 from simcity_ai_mayor.executor.keeper import Keeper, ReasonCode
 from simcity_ai_mayor.runtime.metrics import RuntimeMetrics
