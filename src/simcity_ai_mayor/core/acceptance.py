@@ -2,12 +2,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from simcity_ai_mayor.core.models import FactoryState
 
-REQUIRED_TRANSITIONS = (
-    "IDLE->PRODUCING",
-    "PRODUCING->COMPLETED_COLLECTABLE",
-    "COMPLETED_COLLECTABLE->COLLECTED",
-    "COLLECTED->IDLE",
+
+REQUIRED_TRANSITION_PAIRS: tuple[tuple[FactoryState, FactoryState], ...] = (
+    (FactoryState.IDLE, FactoryState.PRODUCING),
+    (FactoryState.PRODUCING, FactoryState.COMPLETED_COLLECTABLE),
+    (FactoryState.COMPLETED_COLLECTABLE, FactoryState.COLLECTED),
+    (FactoryState.COLLECTED, FactoryState.IDLE),
+)
+
+
+def transition_key(before: FactoryState, after: FactoryState) -> str:
+    return f"{before.value}->{after.value}"
+
+
+REQUIRED_TRANSITIONS = tuple(
+    transition_key(before, after) for before, after in REQUIRED_TRANSITION_PAIRS
 )
 
 
@@ -21,18 +32,26 @@ class V0AcceptanceTracker:
     infinite_loop_incidents: int = 0
     stale_state_actions: int = 0
     adb_write_order_incidents: int = 0
+    effective_runtime_seconds: float = 0.0
+    wait_session_cap_seconds: float = 0.0
+    blocked_storage_seconds: float = 0.0
+    blocked_storage_detected: bool = False
+    manual_clear_recovered: bool = False
     transitions: dict[str, int] = field(default_factory=dict)
 
-    def record_transition(self, before: str, after: str) -> None:
-        key = f"{before}->{after}"
+    def record_transition(self, before: FactoryState, after: FactoryState) -> None:
+        key = transition_key(before, after)
         self.transitions[key] = self.transitions.get(key, 0) + 1
 
 
 @dataclass(frozen=True, slots=True)
 class V0AcceptanceRequirements:
+    min_effective_runtime_seconds: float = 4 * 3600
     min_collect_success: int = 10
     min_produce_success: int = 10
     min_each_required_transition: int = 3
+    require_blocked_storage_test: bool = True
+    require_manual_clear_recovery: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,17 +62,25 @@ class AcceptanceResult:
 
 def evaluate_v0_acceptance(
     tracker: V0AcceptanceTracker,
-    requirements: V0AcceptanceRequirements = V0AcceptanceRequirements(),
+    requirements: V0AcceptanceRequirements | None = None,
 ) -> AcceptanceResult:
+    requirements = requirements or V0AcceptanceRequirements()
     failures: list[str] = []
 
+    if tracker.effective_runtime_seconds < requirements.min_effective_runtime_seconds:
+        failures.append(
+            "effective runtime "
+            f"{tracker.effective_runtime_seconds:.0f}s < "
+            f"{requirements.min_effective_runtime_seconds:.0f}s"
+        )
     if tracker.collect_success < requirements.min_collect_success:
         failures.append(
             f"collect coverage {tracker.collect_success} < {requirements.min_collect_success}"
         )
     if tracker.produce_success < requirements.min_produce_success:
         failures.append(
-            f"production coverage {tracker.produce_success} < {requirements.min_produce_success}"
+            f"production coverage {tracker.produce_success} < "
+            f"{requirements.min_produce_success}"
         )
 
     for transition in REQUIRED_TRANSITIONS:
@@ -63,6 +90,11 @@ def evaluate_v0_acceptance(
                 f"transition {transition} coverage {count} < "
                 f"{requirements.min_each_required_transition}"
             )
+
+    if requirements.require_blocked_storage_test and not tracker.blocked_storage_detected:
+        failures.append("BLOCKED_STORAGE test was not observed")
+    if requirements.require_manual_clear_recovery and not tracker.manual_clear_recovered:
+        failures.append("manual-clear recovery test did not pass")
 
     zero_tolerance = {
         "unsafe_purchase": tracker.unsafe_purchase,

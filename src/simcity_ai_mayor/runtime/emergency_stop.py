@@ -5,20 +5,24 @@ import ctypes.wintypes as wintypes
 import os
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 
+class EmergencyStopLatched(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class EmergencyStopChannels:
+    in_process: bool
+    stop_flag: bool
+    hotkey: bool
+    hotkey_reason: str | None = None
+
+
 class EmergencyStop:
-    """Three-channel emergency stop.
-
-    1. In-process event for normal UI STOP.
-    2. Out-of-band stop.flag watcher.
-    3. Windows global hotkey Ctrl+Alt+F12 when available.
-
-    Once tripped, the stop remains latched until reset() is explicitly called.
-    If the process itself is unresponsive, physically closing MuMu remains the final
-    out-of-process safety fallback.
-    """
+    """Latched emergency stop with explicit channel-health reporting."""
 
     HOTKEY_ID = 0x5343
     MOD_ALT = 0x0001
@@ -26,11 +30,23 @@ class EmergencyStop:
     VK_F12 = 0x7B
     WM_HOTKEY = 0x0312
 
-    def __init__(self, stop_flag: str | Path = "runtime/stop.flag") -> None:
-        self.stop_flag = Path(stop_flag)
+    def __init__(
+        self,
+        *,
+        data_root: str | Path,
+        stop_flag_relative: str | Path = "runtime/stop.flag",
+    ) -> None:
+        root = Path(data_root).expanduser().resolve()
+        relative = Path(stop_flag_relative)
+        if relative.is_absolute():
+            raise ValueError("stop_flag_relative must be relative to data_root")
+        self.stop_flag = (root / relative).resolve()
         self._event = threading.Event()
         self._shutdown = threading.Event()
         self._threads: list[threading.Thread] = []
+        self._hotkey_ready = threading.Event()
+        self._hotkey_available = False
+        self._hotkey_reason: str | None = None
 
     @property
     def is_set(self) -> bool:
@@ -48,9 +64,9 @@ class EmergencyStop:
 
     def check(self) -> None:
         if self.is_set:
-            raise RuntimeError("EMERGENCY_STOP is latched")
+            raise EmergencyStopLatched("EMERGENCY_STOP is latched")
 
-    def start_watchers(self) -> None:
+    def start_watchers(self) -> EmergencyStopChannels:
         self.stop_flag.parent.mkdir(parents=True, exist_ok=True)
 
         flag_thread = threading.Thread(
@@ -69,6 +85,18 @@ class EmergencyStop:
             )
             hotkey_thread.start()
             self._threads.append(hotkey_thread)
+            self._hotkey_ready.wait(timeout=1.0)
+        else:
+            self._hotkey_available = False
+            self._hotkey_reason = "global hotkey is only available on Windows"
+            self._hotkey_ready.set()
+
+        return EmergencyStopChannels(
+            in_process=True,
+            stop_flag=True,
+            hotkey=self._hotkey_available,
+            hotkey_reason=self._hotkey_reason,
+        )
 
     def close(self) -> None:
         self._shutdown.set()
@@ -83,19 +111,30 @@ class EmergencyStop:
 
     def _watch_windows_hotkey(self) -> None:
         user32 = ctypes.windll.user32
-        if not user32.RegisterHotKey(
-            None,
-            self.HOTKEY_ID,
-            self.MOD_CONTROL | self.MOD_ALT,
-            self.VK_F12,
-        ):
+        registered = bool(
+            user32.RegisterHotKey(
+                None,
+                self.HOTKEY_ID,
+                self.MOD_CONTROL | self.MOD_ALT,
+                self.VK_F12,
+            )
+        )
+        self._hotkey_available = registered
+        if not registered:
+            self._hotkey_reason = "RegisterHotKey failed; Ctrl+Alt+F12 may be occupied"
+            self._hotkey_ready.set()
             return
 
+        self._hotkey_ready.set()
         msg = wintypes.MSG()
         try:
             while not self._shutdown.is_set():
                 result = user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1)
-                if result and msg.message == self.WM_HOTKEY and msg.wParam == self.HOTKEY_ID:
+                if (
+                    result
+                    and msg.message == self.WM_HOTKEY
+                    and msg.wParam == self.HOTKEY_ID
+                ):
                     self.trigger()
                 time.sleep(0.05)
         finally:

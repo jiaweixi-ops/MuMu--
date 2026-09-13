@@ -4,11 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "simcity-ai-mayor"
-version = "0.1.0"
+version = "0.1.1"
 description = "MuMu + ADB automation foundation for a SimCity BuildIt assistant"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+  "Pillow>=10.4",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -25,6 +27,7 @@ ui = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+namespaces = false
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
@@ -34,3 +37,6 @@ addopts = "-q"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

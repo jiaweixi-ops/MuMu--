@@ -1,21 +1,23 @@
 from simcity_ai_mayor.verifier.predicates import (
     Verdict,
+    all_diff,
     all_of,
     counter_delta,
     screen_eq,
+    state_changed,
     state_eq,
     verify_required,
 )
 
 
-def test_unknown_is_not_success() -> None:
+def test_unknown_is_preserved_and_not_success() -> None:
     result = screen_eq("CITY")({})
     assert result.verdict is Verdict.UNKNOWN
     collapsed = verify_required([result])
-    assert collapsed.verdict is Verdict.FAIL
+    assert collapsed.verdict is Verdict.UNKNOWN
 
 
-def test_composable_predicates() -> None:
+def test_composable_state_predicates() -> None:
     predicate = all_of(
         screen_eq("CITY"),
         state_eq("factory.state", "COMPLETED_COLLECTABLE"),
@@ -27,7 +29,11 @@ def test_composable_predicates() -> None:
     assert predicate(state).verdict is Verdict.PASS
 
 
-def test_counter_delta() -> None:
-    check = counter_delta("storage_used", 1, 1)
-    assert check({"storage_used": 20}, {"storage_used": 21}).verdict is Verdict.PASS
-    assert check({"storage_used": 20}, {"storage_used": 23}).verdict is Verdict.FAIL
+def test_composable_diff_predicates() -> None:
+    predicate = all_diff(
+        counter_delta("storage_used", 1, 1),
+        state_changed("factory.state"),
+    )
+    before = {"storage_used": 20, "factory": {"state": "COMPLETED_COLLECTABLE"}}
+    after = {"storage_used": 21, "factory": {"state": "IDLE"}}
+    assert predicate(before, after).verdict is Verdict.PASS
