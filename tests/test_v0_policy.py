@@ -59,8 +59,9 @@ def test_v0_acceptance_precondition_requires_headroom_for_test_budget() -> None:
     assert "required" in reason
 
 
-def test_reserve_free_uses_true_ceil_without_off_by_one() -> None:
+def test_reserve_free_uses_decimal_configuration_intent() -> None:
     assert V0Policy(reserve_free_ratio=0.20).reserve_free(120) == 24
+    assert V0Policy(reserve_free_ratio=0.28, reserve_free_min=0).reserve_free(25) == 7
 
 
 def test_storage_confidence_defaults_to_untrusted() -> None:
