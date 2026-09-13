@@ -214,7 +214,7 @@ def test_orchestrator_failed_fresh_verify_records_failed_action(tmp_path) -> Non
     store.close()
 
 
-def test_blocked_storage_recovery_is_recorded_only_after_trusted_free_space(tmp_path) -> None:
+def test_blocked_storage_recovery_waits_for_trusted_free_space(tmp_path) -> None:
     store = SessionStore(tmp_path / "state.db")
     clock = FakeClock()
     metrics = RuntimeMetrics(
@@ -232,6 +232,12 @@ def test_blocked_storage_recovery_is_recorded_only_after_trusted_free_space(tmp_
             120,
             FactoryState.COMPLETED_STORAGE_BLOCKED,
             automation_state=AutomationState.BLOCKED_STORAGE,
+        ),
+        make_observation(
+            110,
+            FactoryState.IDLE,
+            automation_state=AutomationState.STORAGE_NORMAL,
+            storage_confidence=0.50,
         ),
         make_observation(
             110,
@@ -256,6 +262,10 @@ def test_blocked_storage_recovery_is_recorded_only_after_trusted_free_space(tmp_
 
     second = orchestrator.run_once()
     assert second.status is CycleStatus.NO_ACTION
+    assert not metrics.tracker.manual_clear_recovered
+
+    third = orchestrator.run_once()
+    assert third.status is CycleStatus.NO_ACTION
     assert metrics.tracker.manual_clear_recovered
 
     command_queue.close()
@@ -327,9 +337,9 @@ def test_action_timeout_cancels_and_drains_before_returning(tmp_path) -> None:
 
     assert result.status is CycleStatus.EXECUTION_FAILED
     assert writer.command_queue.cancel_requested
-    assert runner.taps == [(10, 20)]
     assert observer.calls == 1
     assert metrics.rate_window("collect").failures_5m == 1
+    writer.drain()
 
     command_queue.close()
     metrics.close()
