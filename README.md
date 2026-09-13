@@ -16,6 +16,10 @@ MuMu 模拟器上的《模拟城市：我是市长》自动化工程。
   `shell input` 和原始 `run(["shell", "input", ...])` 都会被拒绝。
 - `V0Orchestrator` 固定执行 `Observe → Plan → Keeper → Queue → Fresh Verify → Metrics`；
   Verifier 非 `PASS` 时不得推进 Acceptance。
+- 同一 `(task_id, action_name)` 上一次执行失败时，下一次自动视为 retry；不同 task 不共享
+  retry 链。Keeper 的 `max_retries_per_action` 因此是可达硬门禁，不再依赖 Planner 手工标记。
+- 主循环按结果分级退避：`NO_ACTION` 使用较长等待，`DENIED` 使用中等等待，连续执行/
+  验证失败使用指数退避并封顶；`VERIFIED` 回到基础轮询间隔。
 - 动作等待超时使用**瞬时取消**：`request_cancel → drain → clear_cancel`。调用方只有在
   在途原子动作真正结束后才拿回控制权，但写通道会重新打开，下一轮可重新 Observe/Plan。
 - 急停与 Ctrl+C 使用**闩锁取消**：写通道保持 cancelled，不自动 `clear_cancel`；Ctrl+C
@@ -102,6 +106,14 @@ PASS 才记录收取/生产成功与 FactoryState 转换
 Observer 每次调用都获取新的 ADB 截图并生成状态，让 Planner 根据该 Observation 返回
 `PlannedAction`。单元测试已经使用真实 Keeper、RuntimeMetrics 与 DeviceCommandQueue
 验证接线；这不等于已经在 MuMu 真机上完成端到端验收。
+
+`RuntimeMetrics` 会按 `(task_id, action_name)` 追踪上一执行结果。第一次失败后的下一次尝试
+自动记为 retry；初次执行加最多 3 次 retry 后，默认 Keeper 会以 `RETRY_LIMIT` 拒绝继续
+执行。不同 task 即使 action 名相同，也不会互相消耗 retry 配额。
+
+`run()` 的等待不再是固定节拍。默认以 `idle_sleep_seconds` 为基准：`NO_ACTION` 为 5 倍、
+`DENIED` 为 3 倍；连续 `EXECUTION_FAILED / VERIFICATION_FAILED` 按 1、2、4、8… 倍指数
+退避，并由 `LoopBackoffPolicy.max_failure_seconds` 封顶。成功验证后失败阶数归零。
 
 `BLOCKED_STORAGE` 的恢复信号也由主循环机械判定：上一观察必须是
 `BLOCKED_STORAGE`，当前观察必须已离开阻塞，并且 `state` 中的 `storage_used`、
