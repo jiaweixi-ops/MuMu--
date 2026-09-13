@@ -7,7 +7,7 @@ name = "simcity-ai-mayor"
 version = "0.1.1"
 description = "MuMu + ADB automation foundation for a SimCity BuildIt assistant"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
   "Pillow>=10.4",
 ]
@@ -36,7 +36,7 @@ addopts = "-q"
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py311"
 src = ["src"]
 
 [tool.ruff.lint]
