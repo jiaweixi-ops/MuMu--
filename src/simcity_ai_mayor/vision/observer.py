@@ -112,13 +112,13 @@ class AdbScreenshotObserver:
     )
     clock: Callable[[], float] = time.monotonic
     expected_size: tuple[int, int] | None = None
+    _frame_id: int = field(init=False, default=0, repr=False)
 
     def __post_init__(self) -> None:
         if self.expected_size is not None:
             width, height = self.expected_size
             if width <= 0 or height <= 0:
                 raise ValueError("expected_size dimensions must be > 0")
-        self._frame_id = 0
 
     @property
     def device_id(self) -> str:
