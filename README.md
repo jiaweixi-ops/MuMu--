@@ -41,6 +41,8 @@ tests/           单元测试
 
 ## 安装
 
+要求 Python **3.11+**。
+
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
@@ -85,7 +87,7 @@ ruff check src tests
 pytest
 ```
 
-CI 同时运行在 `ubuntu-latest` 与 `windows-latest`。
+CI 同时运行 Python `3.11` / `3.12`，并覆盖 `ubuntu-latest` 与 `windows-latest`。
 
 ## License
 
