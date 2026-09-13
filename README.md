@@ -16,8 +16,10 @@ MuMu 模拟器上的《模拟城市：我是市长》自动化工程。
   `shell input` 和原始 `run(["shell", "input", ...])` 都会被拒绝。
 - `V0Orchestrator` 固定执行 `Observe → Plan → Keeper → Queue → Fresh Verify → Metrics`；
   Verifier 非 `PASS` 时不得推进 Acceptance。
-- 动作等待超时后立即 latch ADB 队列 cancel，并等待在途原子动作 drain 完成；在显式恢复前
-  不允许下一轮把迟到的设备变化误认成新动作结果。
+- 动作等待超时使用**瞬时取消**：`request_cancel → drain → clear_cancel`。调用方只有在
+  在途原子动作真正结束后才拿回控制权，但写通道会重新打开，下一轮可重新 Observe/Plan。
+- 急停与 Ctrl+C 使用**闩锁取消**：写通道保持 cancelled，不自动 `clear_cancel`；Ctrl+C
+  映射为 `EMERGENCY_STOP` 并立即 flush RuntimeMetrics。
 - ADB 命令有硬超时；重启 adb-server 后 TCP MuMu 设备必须重新 `connect` 并等待上线。
 - V0 仓库 OCR 的 `confidence` 默认是 `0.0`；未显式给出可信度即视为不可信。
 - V0 默认逐件收取；批量收取留到 V1。
