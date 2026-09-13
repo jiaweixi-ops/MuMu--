@@ -66,8 +66,16 @@ class UnknownFactoryReader:
 class ConservativeAutomationStateResolver:
     """Derive only states that are safe without game-specific heuristics."""
 
-    def __init__(self, policy: V0Policy | None = None) -> None:
+    def __init__(
+        self,
+        policy: V0Policy | None = None,
+        *,
+        storage_required_screens: frozenset[ScreenType] | None = None,
+    ) -> None:
         self.policy = policy or V0Policy()
+        self.storage_required_screens = storage_required_screens or frozenset(
+            {ScreenType.FACTORY, ScreenType.STORAGE}
+        )
 
     def resolve(
         self,
@@ -78,6 +86,8 @@ class ConservativeAutomationStateResolver:
     ) -> AutomationState:
         if screen in {ScreenType.NETWORK_ERROR, ScreenType.UNKNOWN_POPUP, ScreenType.UNKNOWN}:
             return AutomationState.RECOVER
+        if screen in self.storage_required_screens and storage is None:
+            return AutomationState.WAIT_OCR_UNTRUSTED
         if storage is not None and storage.confidence < self.policy.min_ocr_confidence:
             return AutomationState.WAIT_OCR_UNTRUSTED
         if factory_state is FactoryState.COMPLETED_STORAGE_BLOCKED:
