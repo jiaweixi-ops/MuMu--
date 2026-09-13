@@ -103,11 +103,8 @@ class Keeper:
         self,
         request: ActionRequest,
         *,
-        now: float,
         recent: RateWindow,
     ) -> KeeperDecision:
-        del now
-
         if request.device_id != self.device_id:
             return KeeperDecision(
                 Decision.DENY,
