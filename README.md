@@ -16,13 +16,16 @@ MuMu 模拟器上的《模拟城市：我是市长》自动化工程。
   `shell input` 和原始 `run(["shell", "input", ...])` 都会被拒绝。
 - `V0Orchestrator` 固定执行 `Observe → Plan → Keeper → Queue → Fresh Verify → Metrics`；
   Verifier 非 `PASS` 时不得推进 Acceptance。
+- 动作等待超时后立即 latch ADB 队列 cancel，并等待在途原子动作 drain 完成；在显式恢复前
+  不允许下一轮把迟到的设备变化误认成新动作结果。
 - ADB 命令有硬超时；重启 adb-server 后 TCP MuMu 设备必须重新 `connect` 并等待上线。
 - V0 仓库 OCR 的 `confidence` 默认是 `0.0`；未显式给出可信度即视为不可信。
 - V0 默认逐件收取；批量收取留到 V1。
 - `WAIT_SESSION_CAP`、`WAIT_STORAGE_RESERVE`、`WAIT_OCR_UNTRUSTED` 语义分离。
 - session cap 与 V0 Acceptance 覆盖度均持久化到 SQLite，重启不能绕过额度或清空验收覆盖。
 - 每个 `device_id` 同时只允许一个 `RuntimeMetrics` owner；SQLite lease 防止多实例静默覆盖。
-- `ASSIST` 使用 `NEEDS_HUMAN`，人工批准后仍必须重新经过 Keeper 其余硬门禁。
+- `ASSIST` 使用 `NEEDS_HUMAN`；主循环遇到该状态立即停止轮询，人工批准后仍必须重新经过
+  Keeper 其余硬门禁。
 - Verifier 保留 `UNKNOWN`；只有 `PASS` 能推进 Task，并保留全部失败原因用于复盘。
 - 急停通道健康状态必须可见；`stop.flag` 使用绝对路径。
 - 不设计反检测或规避平台风控能力。
@@ -97,6 +100,11 @@ PASS 才记录收取/生产成功与 FactoryState 转换
 Observer 每次调用都获取新的 ADB 截图并生成状态，让 Planner 根据该 Observation 返回
 `PlannedAction`。单元测试已经使用真实 Keeper、RuntimeMetrics 与 DeviceCommandQueue
 验证接线；这不等于已经在 MuMu 真机上完成端到端验收。
+
+`BLOCKED_STORAGE` 的恢复信号也由主循环机械判定：上一观察必须是
+`BLOCKED_STORAGE`，当前观察必须已离开阻塞，并且 `state` 中的 `storage_used`、
+`storage_capacity`、`storage_confidence` 可解析，OCR 置信度 `>= 0.99` 且剩余容量 `> 0`，
+才会记录 `manual_clear_recovered`。仅页面跳转或低置信度 OCR 不算人工清库恢复。
 
 ## V0 Gate
 
