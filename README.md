@@ -16,6 +16,14 @@ MuMu 模拟器上的《模拟城市：我是市长》自动化工程。
   `shell input` 和原始 `run(["shell", "input", ...])` 都会被拒绝。
 - `V0Orchestrator` 固定执行 `Observe → Plan → Keeper → Queue → Fresh Verify → Metrics`；
   Verifier 非 `PASS` 时不得推进 Acceptance。
+- `Observation` 必须携带正数 `frame_id` 与 `captured_at`；动作后的 observation 必须同时满足
+  `after.frame_id > before.frame_id` 与 `after.captured_at > before.captured_at`，否则直接进入
+  `VERIFICATION_FAILED / RECOVER`，业务 Diff Verifier 不会执行。
+- 仓库容量使用 typed `StorageCapacity | None` 进入 `Observation`。`storage_used`、
+  `storage_capacity`、`storage_confidence` 由 `Observation.verifier_state()` 统一投影，Observer
+  不再通过自由字符串 dict 定义核心仓库 schema。
+- V0 仓库 OCR 可信阈值只有一个 Source of Truth：`V0Policy.min_ocr_confidence`；
+  Orchestrator 的人工清库恢复判定与生产/收取策略共享同一 policy。
 - 同一 `(task_id, action_name)` 上一次执行失败时，下一次自动视为 retry；不同 task 不共享
   retry 链。Keeper 的 `max_retries_per_action` 因此是可达硬门禁，不再依赖 Planner 手工标记。
 - 主循环按结果分级退避：`NO_ACTION` 使用较长等待，`DENIED` 使用中等等待，连续执行/
@@ -97,15 +105,23 @@ QueueBoundAdbWriter
 ↓
 再次 Fresh Observe
 ↓
+Freshness Gate（frame_id + captured_at）
+↓
 Diff Verifier
 ↓
 PASS 才记录收取/生产成功与 FactoryState 转换
 ```
 
-当前 `Observer` 与 `Planner` 是协议接口，故意没有伪造游戏视觉实现。真机阶段需要让
-Observer 每次调用都获取新的 ADB 截图并生成状态，让 Planner 根据该 Observation 返回
-`PlannedAction`。单元测试已经使用真实 Keeper、RuntimeMetrics 与 DeviceCommandQueue
-验证接线；这不等于已经在 MuMu 真机上完成端到端验收。
+当前 `Observer` 与 `Planner` 是协议接口，故意没有伪造游戏视觉实现。真机 Observer 每次
+调用都必须真正获取新的 ADB 截图，并为该捕获生成单调递增的 `frame_id` 与 `captured_at`。
+如果动作后返回旧帧，Orchestrator 会在业务 verifier 前机械拒绝。单元测试已经使用真实
+Keeper、RuntimeMetrics 与 DeviceCommandQueue 验证接线；这不等于已经在 MuMu 真机上
+完成端到端验收。
+
+仓库状态不再由 `state["storage_used"]` 等自由字符串作为主数据源。Observer 应构造
+`StorageCapacity(used, capacity, confidence)` 并放入 `Observation.storage`；Orchestrator 仅在
+调用通用 Diff Verifier 时，通过 `verifier_state()` 投影兼容字段。即使 `state` 中出现冲突的
+仓库键值，也以 typed `StorageCapacity` 为准。
 
 `RuntimeMetrics` 会按 `(task_id, action_name)` 追踪上一执行结果。第一次失败后的下一次尝试
 自动记为 retry；初次执行加最多 3 次 retry 后，默认 Keeper 会以 `RETRY_LIMIT` 拒绝继续
@@ -115,10 +131,10 @@ Observer 每次调用都获取新的 ADB 截图并生成状态，让 Planner 根
 `DENIED` 为 3 倍；连续 `EXECUTION_FAILED / VERIFICATION_FAILED` 按 1、2、4、8… 倍指数
 退避，并由 `LoopBackoffPolicy.max_failure_seconds` 封顶。成功验证后失败阶数归零。
 
-`BLOCKED_STORAGE` 的恢复信号也由主循环机械判定：上一观察必须是
-`BLOCKED_STORAGE`，当前观察必须已离开阻塞，并且 `state` 中的 `storage_used`、
-`storage_capacity`、`storage_confidence` 可解析，OCR 置信度 `>= 0.99` 且剩余容量 `> 0`，
-才会记录 `manual_clear_recovered`。仅页面跳转或低置信度 OCR 不算人工清库恢复。
+`BLOCKED_STORAGE` 的恢复信号也由主循环机械判定：上一观察进入
+`BLOCKED_STORAGE` 后保持 recovery-pending；只有后续 observation 已离开阻塞、存在 typed
+`StorageCapacity`、`free > 0`，且 `storage.confidence >= V0Policy.min_ocr_confidence`，才会
+记录 `manual_clear_recovered`。低置信度 OCR 或仅页面跳转都不算人工清库恢复。
 
 ## V0 Gate
 
