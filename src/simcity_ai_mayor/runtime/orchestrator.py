@@ -13,14 +13,14 @@ from simcity_ai_mayor.core.models import (
     FactoryState,
     RiskLevel,
     ScreenType,
+    StorageCapacity,
+    V0Policy,
 )
 from simcity_ai_mayor.device.command_queue import QueueBoundAdbWriter
 from simcity_ai_mayor.executor.keeper import ActionRequest, Decision, Keeper, KeeperDecision
 from simcity_ai_mayor.runtime.emergency_stop import EmergencyStop, EmergencyStopLatched
 from simcity_ai_mayor.runtime.metrics import RuntimeMetrics
 from simcity_ai_mayor.verifier.predicates import CheckResult, DiffPredicate, Verdict
-
-MANUAL_CLEAR_MIN_CONFIDENCE = 0.99
 
 
 class AcceptanceEvent(StrEnum):
@@ -79,15 +79,34 @@ class LoopBackoffPolicy:
 @dataclass(frozen=True, slots=True)
 class Observation:
     device_id: str
+    frame_id: int
+    captured_at: float
     screen: ScreenType
     automation_state: AutomationState
+    storage: StorageCapacity | None = None
     factory_state: FactoryState = FactoryState.UNKNOWN
     state: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.frame_id <= 0:
+            raise ValueError("frame_id must be > 0")
+        if self.captured_at <= 0:
+            raise ValueError("captured_at must be > 0")
+
+    def verifier_state(self) -> Mapping[str, Any]:
+        projected = dict(self.state)
+        projected.setdefault("screen", self.screen.value)
+        projected.setdefault("factory_state", self.factory_state.value)
+        if self.storage is not None:
+            projected["storage_used"] = self.storage.used
+            projected["storage_capacity"] = self.storage.capacity
+            projected["storage_confidence"] = self.storage.confidence
+        return projected
 
 
 class Observer(Protocol):
     def observe(self) -> Observation:
-        """Return a fresh observation. Implementations must not reuse stale frames."""
+        """Capture a new frame and return its monotonically increasing observation."""
 
 
 ActionExecutor = Callable[[QueueBoundAdbWriter], Future[Any]]
@@ -136,6 +155,7 @@ class V0Orchestrator:
         action_timeout_seconds: float = 15.0,
         sleeper: Callable[[float], None] = time.sleep,
         backoff_policy: LoopBackoffPolicy | None = None,
+        v0_policy: V0Policy | None = None,
     ) -> None:
         if not device_id.strip():
             raise ValueError("device_id is required")
@@ -162,6 +182,7 @@ class V0Orchestrator:
         self.action_timeout_seconds = action_timeout_seconds
         self.sleeper = sleeper
         self.backoff_policy = backoff_policy or LoopBackoffPolicy()
+        self.v0_policy = v0_policy or V0Policy()
         self._blocked_storage_recovery_pending = False
 
     def run_once(self) -> CycleResult:
@@ -266,8 +287,25 @@ class V0Orchestrator:
         self.metrics.tick(AutomationState.VERIFY)
         after = self.observer.observe()
         self._validate_observation(after)
+        freshness = self._verify_freshness(before, after)
+        if freshness.verdict is not Verdict.PASS:
+            self.metrics.record_action(
+                action.name,
+                task_id=action.task_id,
+                success=False,
+                retry=retry,
+            )
+            self.metrics.tick(AutomationState.RECOVER)
+            return CycleResult(
+                CycleStatus.VERIFICATION_FAILED,
+                before=before,
+                after=after,
+                keeper_decision=decision,
+                verification=freshness,
+            )
+
         self._record_special_state(after)
-        verification = action.verify(before.state, after.state)
+        verification = action.verify(before.verifier_state(), after.verifier_state())
         success = verification.verdict is Verdict.PASS
         self.metrics.record_action(
             action.name,
@@ -377,6 +415,22 @@ class V0Orchestrator:
                 f"!= orchestrator device_id {self.device_id!r}"
             )
 
+    @staticmethod
+    def _verify_freshness(before: Observation, after: Observation) -> CheckResult:
+        reasons: list[str] = []
+        if after.frame_id <= before.frame_id:
+            reasons.append(
+                f"frame_id did not advance: before={before.frame_id}, after={after.frame_id}"
+            )
+        if after.captured_at <= before.captured_at:
+            reasons.append(
+                "captured_at did not advance: "
+                f"before={before.captured_at}, after={after.captured_at}"
+            )
+        if reasons:
+            return CheckResult(Verdict.FAIL, "; ".join(reasons))
+        return CheckResult(Verdict.PASS, "fresh observation confirmed")
+
     def _record_special_state(self, observation: Observation) -> None:
         if observation.automation_state is AutomationState.BLOCKED_STORAGE:
             self.metrics.mark_blocked_storage_detected()
@@ -389,18 +443,12 @@ class V0Orchestrator:
             self.metrics.mark_manual_clear_recovered()
             self._blocked_storage_recovery_pending = False
 
-    @staticmethod
-    def _has_trusted_free_storage(observation: Observation) -> bool:
-        try:
-            used = int(observation.state["storage_used"])
-            capacity = int(observation.state["storage_capacity"])
-            confidence = float(observation.state["storage_confidence"])
-        except (KeyError, TypeError, ValueError):
-            return False
+    def _has_trusted_free_storage(self, observation: Observation) -> bool:
+        storage = observation.storage
         return (
-            capacity > 0
-            and 0 <= used < capacity
-            and confidence >= MANUAL_CLEAR_MIN_CONFIDENCE
+            storage is not None
+            and storage.free > 0
+            and storage.confidence >= self.v0_policy.min_ocr_confidence
         )
 
     def _record_acceptance_success(
