@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from simcity_ai_mayor.core.acceptance import V0AcceptanceTracker
+
+
+class MetricsLeaseConflict(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +93,13 @@ class SessionStore:
                     PRIMARY KEY(device_id, transition)
                 );
 
+                CREATE TABLE IF NOT EXISTS v0_metrics_leases (
+                    device_id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    lease_expires_at REAL NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_v0_sessions_device
                 ON v0_sessions(device_id, status);
                 """
@@ -96,6 +108,10 @@ class SessionStore:
     def _validate_device_id(self, device_id: str) -> None:
         if not device_id.strip():
             raise ValueError("device_id is required")
+
+    def _validate_owner_id(self, owner_id: str) -> None:
+        if not owner_id.strip():
+            raise ValueError("owner_id is required")
 
     def _get_active_locked(self, device_id: str) -> sqlite3.Row | None:
         return self._conn.execute(
@@ -184,6 +200,94 @@ class SessionStore:
                 )
             new_row = self._create_active_locked(device_id)
             return self._to_session(new_row)
+
+    def acquire_metrics_lease(
+        self,
+        device_id: str,
+        owner_id: str,
+        *,
+        lease_seconds: float = 120.0,
+        now_epoch: float | None = None,
+    ) -> None:
+        """Acquire one cross-process RuntimeMetrics owner per device."""
+        self._validate_device_id(device_id)
+        self._validate_owner_id(owner_id)
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be > 0")
+        now = time.time() if now_epoch is None else now_epoch
+        expires = now + lease_seconds
+        updated_at = datetime.now(UTC).isoformat()
+
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    "SELECT owner_id, lease_expires_at FROM v0_metrics_leases "
+                    "WHERE device_id=?",
+                    (device_id,),
+                ).fetchone()
+                if (
+                    row is not None
+                    and row["owner_id"] != owner_id
+                    and float(row["lease_expires_at"]) > now
+                ):
+                    raise MetricsLeaseConflict(
+                        f"RuntimeMetrics lease for {device_id!r} is owned by "
+                        f"{row['owner_id']!r}"
+                    )
+                self._conn.execute(
+                    """
+                    INSERT INTO v0_metrics_leases(
+                        device_id, owner_id, lease_expires_at, updated_at
+                    ) VALUES(?, ?, ?, ?)
+                    ON CONFLICT(device_id) DO UPDATE SET
+                        owner_id=excluded.owner_id,
+                        lease_expires_at=excluded.lease_expires_at,
+                        updated_at=excluded.updated_at
+                    """,
+                    (device_id, owner_id, expires, updated_at),
+                )
+            except BaseException:
+                self._conn.rollback()
+                raise
+            else:
+                self._conn.commit()
+
+    def renew_metrics_lease(
+        self,
+        device_id: str,
+        owner_id: str,
+        *,
+        lease_seconds: float = 120.0,
+        now_epoch: float | None = None,
+    ) -> None:
+        self._validate_device_id(device_id)
+        self._validate_owner_id(owner_id)
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be > 0")
+        now = time.time() if now_epoch is None else now_epoch
+        expires = now + lease_seconds
+        updated_at = datetime.now(UTC).isoformat()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "UPDATE v0_metrics_leases SET lease_expires_at=?, updated_at=? "
+                "WHERE device_id=? AND owner_id=?",
+                (expires, updated_at, device_id, owner_id),
+            )
+            if cursor.rowcount != 1:
+                raise MetricsLeaseConflict(
+                    f"RuntimeMetrics lease for {device_id!r} is no longer owned by "
+                    f"{owner_id!r}"
+                )
+
+    def release_metrics_lease(self, device_id: str, owner_id: str) -> None:
+        self._validate_device_id(device_id)
+        self._validate_owner_id(owner_id)
+        with self._lock, self._conn:
+            self._conn.execute(
+                "DELETE FROM v0_metrics_leases WHERE device_id=? AND owner_id=?",
+                (device_id, owner_id),
+            )
 
     def save_acceptance(self, device_id: str, tracker: V0AcceptanceTracker) -> None:
         """Persist acceptance coverage so process restarts do not erase a run."""
