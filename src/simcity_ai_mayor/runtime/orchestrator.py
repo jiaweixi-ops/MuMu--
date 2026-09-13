@@ -123,7 +123,7 @@ class V0Orchestrator:
         self.emergency_stop = emergency_stop
         self.action_timeout_seconds = action_timeout_seconds
         self.sleeper = sleeper
-        self._last_observed_automation_state: AutomationState | None = None
+        self._blocked_storage_recovery_pending = False
 
     def run_once(self) -> CycleResult:
         stopped = self._check_emergency_stop()
@@ -278,16 +278,16 @@ class V0Orchestrator:
             )
 
     def _record_special_state(self, observation: Observation) -> None:
-        previous = self._last_observed_automation_state
-        current = observation.automation_state
-        if current is AutomationState.BLOCKED_STORAGE:
+        if observation.automation_state is AutomationState.BLOCKED_STORAGE:
             self.metrics.mark_blocked_storage_detected()
-        elif (
-            previous is AutomationState.BLOCKED_STORAGE
+            self._blocked_storage_recovery_pending = True
+            return
+        if (
+            self._blocked_storage_recovery_pending
             and self._has_trusted_free_storage(observation)
         ):
             self.metrics.mark_manual_clear_recovered()
-        self._last_observed_automation_state = current
+            self._blocked_storage_recovery_pending = False
 
     @staticmethod
     def _has_trusted_free_storage(observation: Observation) -> bool:
