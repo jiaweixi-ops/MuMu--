@@ -182,16 +182,28 @@ class V0Orchestrator:
             if future is not None:
                 future.cancel()
             self.writer.request_cancel()
-            self.writer.drain()
+            try:
+                self.writer.drain()
+            finally:
+                self.writer.clear_cancel()
             self.metrics.record_action(action.name, success=False, retry=action.retry)
             self.metrics.tick(AutomationState.RECOVER)
             return CycleResult(
                 CycleStatus.EXECUTION_FAILED,
                 before=before,
                 keeper_decision=decision,
-                error=f"{type(exc).__name__}: action timed out; ADB writer cancelled and drained",
+                error=(
+                    f"{type(exc).__name__}: action timed out; "
+                    "ADB writer cancelled, drained, and reopened"
+                ),
             )
-        except BaseException as exc:
+        except KeyboardInterrupt as exc:
+            return self._handle_keyboard_interrupt(
+                exc,
+                before=before,
+                keeper_decision=decision,
+            )
+        except Exception as exc:
             self.metrics.record_action(action.name, success=False, retry=action.retry)
             self.metrics.tick(AutomationState.RECOVER)
             return CycleResult(
@@ -244,12 +256,16 @@ class V0Orchestrator:
         completed = 0
         stop_statuses = {CycleStatus.EMERGENCY_STOP, CycleStatus.NEEDS_HUMAN}
         while max_cycles is None or completed < max_cycles:
-            last_result = self.run_once()
-            completed += 1
-            if last_result.status in stop_statuses:
+            try:
+                last_result = self.run_once()
+                completed += 1
+                if last_result.status in stop_statuses:
+                    break
+                if idle_sleep_seconds:
+                    self.sleeper(idle_sleep_seconds)
+            except KeyboardInterrupt as exc:
+                last_result = self._handle_keyboard_interrupt(exc)
                 break
-            if idle_sleep_seconds:
-                self.sleeper(idle_sleep_seconds)
         return last_result
 
     def _check_emergency_stop(
@@ -269,6 +285,24 @@ class V0Orchestrator:
                 error=str(exc),
             )
         return None
+
+    def _handle_keyboard_interrupt(
+        self,
+        exc: KeyboardInterrupt,
+        *,
+        before: Observation | None = None,
+        keeper_decision: KeeperDecision | None = None,
+    ) -> CycleResult:
+        self.writer.request_cancel()
+        self.writer.drain()
+        self.metrics.tick(AutomationState.EMERGENCY_STOP)
+        self.metrics.flush()
+        return CycleResult(
+            CycleStatus.EMERGENCY_STOP,
+            before=before,
+            keeper_decision=keeper_decision,
+            error=f"{type(exc).__name__}: user interrupt; ADB writer remains cancelled",
+        )
 
     def _validate_observation(self, observation: Observation) -> None:
         if observation.device_id != self.device_id:
