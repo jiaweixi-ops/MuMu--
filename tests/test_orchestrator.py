@@ -1,5 +1,6 @@
 import time
 from collections import deque
+from itertools import count
 
 from simcity_ai_mayor.core.models import (
     AutomationState,
@@ -7,6 +8,7 @@ from simcity_ai_mayor.core.models import (
     RiskLevel,
     RunMode,
     ScreenType,
+    StorageCapacity,
 )
 from simcity_ai_mayor.device.command_queue import DeviceCommandQueue, QueueBoundAdbWriter
 from simcity_ai_mayor.executor.keeper import Keeper
@@ -20,6 +22,8 @@ from simcity_ai_mayor.runtime.orchestrator import (
 )
 from simcity_ai_mayor.storage.session_store import SessionStore
 from simcity_ai_mayor.verifier.predicates import counter_delta
+
+_FRAME_IDS = count(1)
 
 
 class FakeClock:
@@ -112,17 +116,25 @@ def make_observation(
     automation_state: AutomationState = AutomationState.OBSERVE,
     storage_capacity: int = 120,
     storage_confidence: float = 1.0,
+    frame_id: int | None = None,
+    captured_at: float | None = None,
 ) -> Observation:
+    actual_frame_id = frame_id if frame_id is not None else next(_FRAME_IDS)
+    actual_captured_at = (
+        captured_at if captured_at is not None else float(actual_frame_id)
+    )
     return Observation(
         device_id="mumu-0",
+        frame_id=actual_frame_id,
+        captured_at=actual_captured_at,
         screen=ScreenType.FACTORY,
         automation_state=automation_state,
+        storage=StorageCapacity(
+            used=storage_used,
+            capacity=storage_capacity,
+            confidence=storage_confidence,
+        ),
         factory_state=factory_state,
-        state={
-            "storage_used": storage_used,
-            "storage_capacity": storage_capacity,
-            "storage_confidence": storage_confidence,
-        },
     )
 
 
@@ -162,6 +174,56 @@ def test_orchestrator_executes_through_queue_and_fresh_verifies(tmp_path) -> Non
         "COMPLETED_COLLECTABLE->COLLECTED": 1,
     }
     assert metrics.rate_window("collect").samples_5m == 1
+
+    command_queue.close()
+    metrics.close()
+    store.close()
+
+
+def test_orchestrator_rejects_stale_after_frame_before_business_verifier(tmp_path) -> None:
+    store = SessionStore(tmp_path / "state.db")
+    clock = FakeClock()
+    metrics = RuntimeMetrics(
+        device_id="mumu-0",
+        store=store,
+        clock=clock,
+        lease_clock=clock,
+        owner_id="orchestrator-test",
+    )
+    runner = FakeRunner("mumu-0")
+    command_queue = DeviceCommandQueue("mumu-0")
+    writer = QueueBoundAdbWriter(runner, command_queue)
+    observer = FakeObserver(
+        make_observation(
+            10,
+            FactoryState.COMPLETED_COLLECTABLE,
+            frame_id=500,
+            captured_at=500.0,
+        ),
+        make_observation(
+            11,
+            FactoryState.COLLECTED,
+            frame_id=500,
+            captured_at=500.0,
+        ),
+    )
+    orchestrator = V0Orchestrator(
+        device_id="mumu-0",
+        observer=observer,
+        planner=FixedPlanner(make_collect_action()),
+        keeper=Keeper(device_id="mumu-0", run_mode=RunMode.AUTO),
+        writer=writer,
+        metrics=metrics,
+    )
+
+    result = orchestrator.run_once()
+
+    assert result.status is CycleStatus.VERIFICATION_FAILED
+    assert result.verification is not None
+    assert "frame_id did not advance" in result.verification.reason
+    assert "captured_at did not advance" in result.verification.reason
+    assert metrics.tracker.collect_success == 0
+    assert metrics.rate_window("collect", task_id="collect-1").failures_5m == 1
 
     command_queue.close()
     metrics.close()
