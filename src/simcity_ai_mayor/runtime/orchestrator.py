@@ -36,6 +36,7 @@ class CycleStatus(StrEnum):
     VERIFIED = "VERIFIED"
     VERIFICATION_FAILED = "VERIFICATION_FAILED"
     EXECUTION_FAILED = "EXECUTION_FAILED"
+    OBSERVE_FAILED = "OBSERVE_FAILED"
     EMERGENCY_STOP = "EMERGENCY_STOP"
 
 
@@ -69,7 +70,11 @@ class LoopBackoffPolicy:
             return base_seconds * self.no_action_multiplier
         if status is CycleStatus.DENIED:
             return base_seconds * self.denied_multiplier
-        if status in {CycleStatus.EXECUTION_FAILED, CycleStatus.VERIFICATION_FAILED}:
+        if status in {
+            CycleStatus.EXECUTION_FAILED,
+            CycleStatus.VERIFICATION_FAILED,
+            CycleStatus.OBSERVE_FAILED,
+        }:
             exponent = max(0, consecutive_failures - 1)
             delay = base_seconds * (self.failure_multiplier**exponent)
             return min(delay, self.max_failure_seconds)
@@ -191,12 +196,23 @@ class V0Orchestrator:
             return stopped
 
         self.metrics.tick(AutomationState.OBSERVE)
-        before = self.observer.observe()
-        self._validate_observation(before)
-        self._record_special_state(before)
+        try:
+            before = self.observer.observe()
+            self._validate_observation(before)
+            self._record_special_state(before)
+        except KeyboardInterrupt as exc:
+            return self._handle_keyboard_interrupt(exc)
+        except Exception as exc:
+            return self._phase_failure("observe", exc)
 
         self.metrics.tick(AutomationState.PLAN)
-        action = self.planner.plan(before)
+        try:
+            action = self.planner.plan(before)
+        except KeyboardInterrupt as exc:
+            return self._handle_keyboard_interrupt(exc, before=before)
+        except Exception as exc:
+            return self._phase_failure("plan", exc, before=before)
+
         if action is None:
             self.metrics.tick(before.automation_state)
             return CycleResult(CycleStatus.NO_ACTION, before=before)
@@ -285,8 +301,29 @@ class V0Orchestrator:
             )
 
         self.metrics.tick(AutomationState.VERIFY)
-        after = self.observer.observe()
-        self._validate_observation(after)
+        try:
+            after = self.observer.observe()
+            self._validate_observation(after)
+        except KeyboardInterrupt as exc:
+            return self._handle_keyboard_interrupt(
+                exc,
+                before=before,
+                keeper_decision=decision,
+            )
+        except Exception as exc:
+            self.metrics.record_action(
+                action.name,
+                task_id=action.task_id,
+                success=False,
+                retry=retry,
+            )
+            return self._phase_failure(
+                "fresh observe",
+                exc,
+                before=before,
+                keeper_decision=decision,
+            )
+
         freshness = self._verify_freshness(before, after)
         if freshness.verdict is not Verdict.PASS:
             self.metrics.record_action(
@@ -339,21 +376,30 @@ class V0Orchestrator:
         *,
         max_cycles: int | None = None,
         idle_sleep_seconds: float = 0.5,
+        max_consecutive_loop_errors: int = 5,
     ) -> CycleResult | None:
         if max_cycles is not None and max_cycles <= 0:
             raise ValueError("max_cycles must be > 0 when provided")
         if idle_sleep_seconds < 0:
             raise ValueError("idle_sleep_seconds must be >= 0")
+        if max_consecutive_loop_errors <= 0:
+            raise ValueError("max_consecutive_loop_errors must be > 0")
 
         last_result: CycleResult | None = None
         completed = 0
         consecutive_failures = 0
+        consecutive_loop_errors = 0
         stop_statuses = {CycleStatus.EMERGENCY_STOP, CycleStatus.NEEDS_HUMAN}
-        failure_statuses = {CycleStatus.EXECUTION_FAILED, CycleStatus.VERIFICATION_FAILED}
+        failure_statuses = {
+            CycleStatus.EXECUTION_FAILED,
+            CycleStatus.VERIFICATION_FAILED,
+            CycleStatus.OBSERVE_FAILED,
+        }
         while max_cycles is None or completed < max_cycles:
             try:
                 last_result = self.run_once()
                 completed += 1
+                consecutive_loop_errors = 0
                 if last_result.status in stop_statuses:
                     break
                 if last_result.status in failure_statuses:
@@ -370,6 +416,40 @@ class V0Orchestrator:
             except KeyboardInterrupt as exc:
                 last_result = self._handle_keyboard_interrupt(exc)
                 break
+            except Exception as exc:
+                completed += 1
+                consecutive_loop_errors += 1
+                consecutive_failures += 1
+                self.metrics.tick(AutomationState.RECOVER)
+                last_result = CycleResult(
+                    CycleStatus.OBSERVE_FAILED,
+                    error=f"{type(exc).__name__}: unhandled loop error: {exc}",
+                )
+                if consecutive_loop_errors >= max_consecutive_loop_errors:
+                    self.writer.request_cancel()
+                    self.writer.drain()
+                    self.metrics.flush()
+                    last_result = CycleResult(
+                        CycleStatus.OBSERVE_FAILED,
+                        error=(
+                            f"{type(exc).__name__}: loop error limit reached "
+                            f"({consecutive_loop_errors}/{max_consecutive_loop_errors}): {exc}"
+                        ),
+                    )
+                    break
+                delay = self.backoff_policy.delay_for(
+                    CycleStatus.OBSERVE_FAILED,
+                    base_seconds=idle_sleep_seconds,
+                    consecutive_failures=consecutive_failures,
+                )
+                if delay:
+                    try:
+                        self.sleeper(delay)
+                    except KeyboardInterrupt as interrupt:
+                        last_result = self._handle_keyboard_interrupt(interrupt)
+                        break
+                    except Exception:
+                        pass
         return last_result
 
     def _check_emergency_stop(
@@ -406,6 +486,22 @@ class V0Orchestrator:
             before=before,
             keeper_decision=keeper_decision,
             error=f"{type(exc).__name__}: user interrupt; ADB writer remains cancelled",
+        )
+
+    def _phase_failure(
+        self,
+        phase: str,
+        exc: Exception,
+        *,
+        before: Observation | None = None,
+        keeper_decision: KeeperDecision | None = None,
+    ) -> CycleResult:
+        self.metrics.tick(AutomationState.RECOVER)
+        return CycleResult(
+            CycleStatus.OBSERVE_FAILED,
+            before=before,
+            keeper_decision=keeper_decision,
+            error=f"{type(exc).__name__}: {phase} failed: {exc}",
         )
 
     def _validate_observation(self, observation: Observation) -> None:
