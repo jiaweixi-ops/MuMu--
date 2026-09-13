@@ -1,4 +1,5 @@
 from collections import deque
+from itertools import count
 
 from simcity_ai_mayor.core.models import (
     AutomationState,
@@ -6,6 +7,7 @@ from simcity_ai_mayor.core.models import (
     RiskLevel,
     RunMode,
     ScreenType,
+    StorageCapacity,
 )
 from simcity_ai_mayor.device.command_queue import DeviceCommandQueue, QueueBoundAdbWriter
 from simcity_ai_mayor.executor.keeper import Keeper, ReasonCode
@@ -18,6 +20,8 @@ from simcity_ai_mayor.runtime.orchestrator import (
 )
 from simcity_ai_mayor.storage.session_store import SessionStore
 from simcity_ai_mayor.verifier.predicates import counter_delta
+
+_FRAME_IDS = count(1)
 
 
 class FakeClock:
@@ -56,16 +60,15 @@ class FixedPlanner:
 
 
 def make_observation(storage_used: int = 10) -> Observation:
+    frame_id = next(_FRAME_IDS)
     return Observation(
         device_id="mumu-0",
+        frame_id=frame_id,
+        captured_at=float(frame_id),
         screen=ScreenType.FACTORY,
         automation_state=AutomationState.OBSERVE,
+        storage=StorageCapacity(storage_used, 120, 1.0),
         factory_state=FactoryState.COMPLETED_COLLECTABLE,
-        state={
-            "storage_used": storage_used,
-            "storage_capacity": 120,
-            "storage_confidence": 1.0,
-        },
     )
 
 
