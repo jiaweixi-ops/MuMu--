@@ -56,6 +56,7 @@ _NON_EFFECTIVE_STATES = frozenset(
         AutomationState.BOOT,
         AutomationState.PAUSED,
         AutomationState.BLOCKED_STORAGE,
+        AutomationState.RECOVER,
         AutomationState.EMERGENCY_STOP,
         AutomationState.STOPPED,
     }
