@@ -46,6 +46,7 @@ class AcceptanceStore(Protocol):
 class ActionSample:
     timestamp: float
     action_name: str
+    task_id: str
     success: bool
     retry: bool = False
 
@@ -138,19 +139,30 @@ class RuntimeMetrics:
         self,
         action_name: str,
         *,
+        task_id: str = "",
         success: bool,
-        retry: bool = False,
+        retry: bool | None = None,
     ) -> None:
         if not action_name.strip():
             raise ValueError("action_name is required")
         with self._lock:
             self._ensure_open()
             now = self.clock()
-            self._events.append(ActionSample(now, action_name, success, retry))
+            if retry is None:
+                retry = self._is_retry_locked(task_id, action_name)
+            self._events.append(ActionSample(now, action_name, task_id, success, retry))
             self._prune_events(now)
             self._maybe_persist(now)
 
-    def rate_window(self, action_name: str) -> RateWindow:
+    def is_retry(self, task_id: str, action_name: str) -> bool:
+        if not action_name.strip():
+            raise ValueError("action_name is required")
+        with self._lock:
+            self._ensure_open()
+            self._prune_events(self.clock())
+            return self._is_retry_locked(task_id, action_name)
+
+    def rate_window(self, action_name: str, *, task_id: str = "") -> RateWindow:
         if not action_name.strip():
             raise ValueError("action_name is required")
         with self._lock:
@@ -169,7 +181,7 @@ class RuntimeMetrics:
             )
             samples_5m = len(five_minute_events)
             failures_5m = sum(1 for sample in five_minute_events if not sample.success)
-            retries_for_action = self._consecutive_retries(events, action_name)
+            retries_for_action = self._consecutive_retries(events, action_name, task_id)
             cooldown_until = self._cooldowns.get(action_name, 0.0)
 
             return RateWindow(
@@ -271,14 +283,32 @@ class RuntimeMetrics:
         if self._closed:
             raise RuntimeError("RuntimeMetrics is closed")
 
-    @staticmethod
-    def _consecutive_retries(events: tuple[ActionSample, ...], action_name: str) -> int:
+    def _is_retry_locked(self, task_id: str, action_name: str) -> bool:
+        for sample in reversed(self._events):
+            if not self._same_action(sample, action_name, task_id):
+                continue
+            return not sample.success
+        return False
+
+    @classmethod
+    def _consecutive_retries(
+        cls,
+        events: tuple[ActionSample, ...],
+        action_name: str,
+        task_id: str,
+    ) -> int:
         count = 0
         for sample in reversed(events):
-            if sample.action_name != action_name:
+            if not cls._same_action(sample, action_name, task_id):
                 continue
             if sample.success:
                 break
             if sample.retry:
                 count += 1
         return count
+
+    @staticmethod
+    def _same_action(sample: ActionSample, action_name: str, task_id: str) -> bool:
+        if sample.action_name != action_name:
+            return False
+        return not task_id or sample.task_id == task_id
