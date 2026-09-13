@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
+from decimal import ROUND_CEILING, Decimal
 from enum import IntEnum, StrEnum
 
 
@@ -104,8 +104,11 @@ class V0Policy:
     def reserve_free(self, capacity: int) -> int:
         if capacity <= 0:
             raise ValueError("capacity must be > 0")
-        ratio_reserve = math.ceil(capacity * self.reserve_free_ratio - 1e-9)
-        return max(self.reserve_free_min, ratio_reserve)
+        # Interpret the configured decimal ratio as written, rather than applying
+        # ceil() directly to a binary-float product that may be N + epsilon.
+        ratio = Decimal(str(self.reserve_free_ratio))
+        reserve = (Decimal(capacity) * ratio).to_integral_value(rounding=ROUND_CEILING)
+        return max(self.reserve_free_min, int(reserve))
 
 
 @dataclass(frozen=True, slots=True)
