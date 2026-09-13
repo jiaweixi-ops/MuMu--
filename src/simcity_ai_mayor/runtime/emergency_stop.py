@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import ctypes.wintypes as wintypes
 import os
 import threading
 import time
@@ -15,6 +16,8 @@ class EmergencyStop:
     3. Windows global hotkey Ctrl+Alt+F12 when available.
 
     Once tripped, the stop remains latched until reset() is explicitly called.
+    If the process itself is unresponsive, physically closing MuMu remains the final
+    out-of-process safety fallback.
     """
 
     HOTKEY_ID = 0x5343
@@ -88,7 +91,7 @@ class EmergencyStop:
         ):
             return
 
-        msg = ctypes.wintypes.MSG()
+        msg = wintypes.MSG()
         try:
             while not self._shutdown.is_set():
                 result = user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1)
