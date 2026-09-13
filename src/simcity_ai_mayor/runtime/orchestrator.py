@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping
-from concurrent.futures import Future, TimeoutError as FutureTimeoutError
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol
