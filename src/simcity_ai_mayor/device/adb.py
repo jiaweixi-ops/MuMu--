@@ -4,9 +4,9 @@ import os
 import struct
 import subprocess
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"

@@ -5,7 +5,7 @@ from collections import deque
 
 import pytest
 
-from simcity_ai_mayor.device.adb import AdbRunner, AdbTimeout, PNG_SIGNATURE
+from simcity_ai_mayor.device.adb import PNG_SIGNATURE, AdbRunner, AdbTimeout
 
 
 class FakeProcess:

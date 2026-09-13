@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from enum import Enum
-from typing import Any, Callable, Iterable, Mapping
+from enum import StrEnum
+from typing import Any
 
 
 __all__ = [
@@ -28,7 +29,7 @@ __all__ = [
 # icon_present, icon_absent, frame_changed, factory_state_eq, stable_for, within.
 
 
-class Verdict(str, Enum):
+class Verdict(StrEnum):
     PASS = "PASS"
     FAIL = "FAIL"
     UNKNOWN = "UNKNOWN"

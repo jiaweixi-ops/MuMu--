@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Final
 
 from simcity_ai_mayor.core.models import RiskLevel, RunMode, ScreenType
@@ -17,13 +17,13 @@ ACTIONABLE_SCREENS: Final[frozenset[ScreenType]] = frozenset(
 )
 
 
-class Decision(str, Enum):
+class Decision(StrEnum):
     ALLOW = "ALLOW"
     DENY = "DENY"
     NEEDS_HUMAN = "NEEDS_HUMAN"
 
 
-class ReasonCode(str, Enum):
+class ReasonCode(StrEnum):
     APPROVED = "APPROVED"
     DRY_RUN = "DRY_RUN"
     HUMAN_APPROVAL_REQUIRED = "HUMAN_APPROVAL_REQUIRED"

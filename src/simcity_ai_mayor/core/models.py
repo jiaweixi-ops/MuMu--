@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from enum import Enum, IntEnum
+from enum import IntEnum, StrEnum
 
 
-class RunMode(str, Enum):
+class RunMode(StrEnum):
     DRY_RUN = "DRY_RUN"
     ASSIST = "ASSIST"
     AUTO = "AUTO"
@@ -18,7 +18,7 @@ class RiskLevel(IntEnum):
     L3 = 3
 
 
-class ScreenType(str, Enum):
+class ScreenType(StrEnum):
     CITY = "CITY"
     FACTORY = "FACTORY"
     SHOP = "SHOP"
@@ -29,7 +29,7 @@ class ScreenType(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
-class FactoryState(str, Enum):
+class FactoryState(StrEnum):
     IDLE = "IDLE"
     PRODUCING = "PRODUCING"
     COMPLETED_COLLECTABLE = "COMPLETED_COLLECTABLE"
@@ -38,7 +38,7 @@ class FactoryState(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
-class AutomationState(str, Enum):
+class AutomationState(StrEnum):
     BOOT = "BOOT"
     OBSERVE = "OBSERVE"
     PLAN = "PLAN"
