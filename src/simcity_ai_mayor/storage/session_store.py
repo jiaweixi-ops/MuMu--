@@ -32,6 +32,7 @@ class SessionStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA foreign_keys=ON")
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -44,14 +45,17 @@ class SessionStore:
                     started_at TEXT NOT NULL,
                     ended_at TEXT,
                     reset_reason TEXT,
-                    status TEXT NOT NULL,
-                    UNIQUE(device_id, status) ON CONFLICT ABORT
+                    status TEXT NOT NULL CHECK(status IN ('ACTIVE', 'CLOSED'))
                 );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_v0_one_active_session_per_device
+                ON v0_sessions(device_id)
+                WHERE status='ACTIVE';
 
                 CREATE TABLE IF NOT EXISTS v0_session_output (
                     session_id TEXT NOT NULL,
                     item TEXT NOT NULL,
-                    output_count INTEGER NOT NULL DEFAULT 0,
+                    output_count INTEGER NOT NULL DEFAULT 0 CHECK(output_count >= 0),
                     PRIMARY KEY(session_id, item),
                     FOREIGN KEY(session_id) REFERENCES v0_sessions(session_id)
                 );
@@ -62,6 +66,8 @@ class SessionStore:
             )
 
     def get_or_create_active(self, device_id: str) -> V0Session:
+        if not device_id.strip():
+            raise ValueError("device_id is required")
         with self._lock, self._conn:
             row = self._conn.execute(
                 "SELECT * FROM v0_sessions WHERE device_id=? AND status='ACTIVE'",
@@ -81,6 +87,8 @@ class SessionStore:
             return self._to_session(row)
 
     def record_output(self, device_id: str, item: str, count: int = 1) -> None:
+        if not item.strip():
+            raise ValueError("item is required")
         if count <= 0:
             raise ValueError("count must be positive")
         with self._lock, self._conn:
@@ -114,6 +122,12 @@ class SessionStore:
             return int(row[0])
 
     def reset_session(self, device_id: str, *, reason: str) -> V0Session:
+        """Explicitly close the active session and create a fresh one.
+
+        Normal restarts must not call this method. Valid reasons are human actions such
+        as a verified storage-clear event or an explicit acceptance-test reset.
+        """
+
         if not reason.strip():
             raise ValueError("explicit reset reason is required")
         now = datetime.now(UTC).isoformat()
