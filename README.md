@@ -31,7 +31,7 @@ src/simcity_ai_mayor/
   executor/      Keeper 安全闸门
   verifier/      State/Diff 可组合断言
   storage/       SQLite session + acceptance 持久化
-  runtime/       急停
+  runtime/       急停、单调时钟、滑动窗口与验收指标
   phase1/        Phase -1a 环境探测
 docs/            Gate 文档骨架
 playbooks/       交互剧本
@@ -77,8 +77,9 @@ V0 验收不是“没有报错”即可通过，默认同时要求：
 - 人工清库后成功重新 Observe/Plan；
 - 误购、误售、高级货币消费、无限循环、旧状态动作、ADB 写入乱序均为 `0`。
 
-验收 tracker 使用与 session cap 相同的 SQLite Store 持久化，程序重启后继续累计，
-不会随机清零。
+`RuntimeMetrics` 使用 `time.monotonic()` 累加有效运行时间，维护 60 秒动作速率与 5 分钟
+失败窗口，并定期把 Acceptance tracker 写入同一个 SQLite Store。程序重启只会丢失最近一次
+持久化间隔内尚未 flush 的少量时间，不会把整轮验收覆盖度清零。
 
 ## 测试
 
