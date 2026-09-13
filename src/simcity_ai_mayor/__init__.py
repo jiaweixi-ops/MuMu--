@@ -1,0 +1,3 @@
+"""SimCity AI Mayor automation foundation."""
+
+__version__ = "0.1.0"
