@@ -28,6 +28,14 @@ def save_template(path: Path, value: int) -> None:
     Image.new("L", (10, 10), value).save(path)
 
 
+def save_pattern_template(path: Path) -> Image.Image:
+    image = Image.new("L", (10, 10))
+    pixels = [40 + x * 8 + y * 3 for y in range(10) for x in range(10)]
+    image.putdata(pixels)
+    image.save(path)
+    return image
+
+
 def test_storage_reader_parses_fragmented_ratio() -> None:
     reader = StorageRoiReader(
         roi=Roi(0, 0, 80, 20),
@@ -89,6 +97,36 @@ def test_fixed_anchor_screen_classifier_fails_closed_on_miss(tmp_path) -> None:
     )
 
     assert classifier.classify(Image.new("L", (30, 30), 0)) is ScreenType.UNKNOWN
+
+
+def test_fixed_anchor_screen_classifier_tolerates_linear_brightness_change(
+    tmp_path,
+) -> None:
+    template_path = tmp_path / "factory_pattern.png"
+    template = save_pattern_template(template_path)
+    classifier = FixedAnchorScreenClassifier(
+        [
+            ScreenTemplateRule(
+                ScreenType.FACTORY,
+                (
+                    TemplateAnchorSpec(
+                        Roi(5, 5, 10, 10),
+                        template_path,
+                        threshold=0.99,
+                    ),
+                ),
+            )
+        ]
+    )
+
+    shifted = Image.new("L", template.size)
+    shifted.putdata(
+        [min(255, int(value * 0.75 + 45)) for value in template.getdata()]
+    )
+    frame = Image.new("L", (30, 30), 0)
+    frame.paste(shifted, (5, 5))
+
+    assert classifier.classify(frame) is ScreenType.FACTORY
 
 
 def test_factory_reader_only_runs_on_factory_screen(tmp_path) -> None:
