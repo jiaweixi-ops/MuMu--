@@ -40,6 +40,43 @@ class CycleStatus(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class LoopBackoffPolicy:
+    no_action_multiplier: float = 5.0
+    denied_multiplier: float = 3.0
+    failure_multiplier: float = 2.0
+    max_failure_seconds: float = 30.0
+
+    def __post_init__(self) -> None:
+        if self.no_action_multiplier < 1:
+            raise ValueError("no_action_multiplier must be >= 1")
+        if self.denied_multiplier < 1:
+            raise ValueError("denied_multiplier must be >= 1")
+        if self.failure_multiplier < 1:
+            raise ValueError("failure_multiplier must be >= 1")
+        if self.max_failure_seconds <= 0:
+            raise ValueError("max_failure_seconds must be > 0")
+
+    def delay_for(
+        self,
+        status: CycleStatus,
+        *,
+        base_seconds: float,
+        consecutive_failures: int,
+    ) -> float:
+        if base_seconds <= 0:
+            return 0.0
+        if status is CycleStatus.NO_ACTION:
+            return base_seconds * self.no_action_multiplier
+        if status is CycleStatus.DENIED:
+            return base_seconds * self.denied_multiplier
+        if status in {CycleStatus.EXECUTION_FAILED, CycleStatus.VERIFICATION_FAILED}:
+            exponent = max(0, consecutive_failures - 1)
+            delay = base_seconds * (self.failure_multiplier**exponent)
+            return min(delay, self.max_failure_seconds)
+        return base_seconds
+
+
+@dataclass(frozen=True, slots=True)
 class Observation:
     device_id: str
     screen: ScreenType
@@ -98,6 +135,7 @@ class V0Orchestrator:
         emergency_stop: EmergencyStop | None = None,
         action_timeout_seconds: float = 15.0,
         sleeper: Callable[[float], None] = time.sleep,
+        backoff_policy: LoopBackoffPolicy | None = None,
     ) -> None:
         if not device_id.strip():
             raise ValueError("device_id is required")
@@ -123,6 +161,7 @@ class V0Orchestrator:
         self.emergency_stop = emergency_stop
         self.action_timeout_seconds = action_timeout_seconds
         self.sleeper = sleeper
+        self.backoff_policy = backoff_policy or LoopBackoffPolicy()
         self._blocked_storage_recovery_pending = False
 
     def run_once(self) -> CycleResult:
@@ -141,6 +180,7 @@ class V0Orchestrator:
             self.metrics.tick(before.automation_state)
             return CycleResult(CycleStatus.NO_ACTION, before=before)
 
+        retry = action.retry or self.metrics.is_retry(action.task_id, action.name)
         request = ActionRequest(
             device_id=self.device_id,
             task_id=action.task_id,
@@ -152,7 +192,7 @@ class V0Orchestrator:
         )
         decision = self.keeper.evaluate(
             request,
-            recent=self.metrics.rate_window(action.name),
+            recent=self.metrics.rate_window(action.name, task_id=action.task_id),
         )
         if decision.decision is Decision.NEEDS_HUMAN:
             self.metrics.tick(AutomationState.PAUSED)
@@ -186,7 +226,12 @@ class V0Orchestrator:
                 self.writer.drain()
             finally:
                 self.writer.clear_cancel()
-            self.metrics.record_action(action.name, success=False, retry=action.retry)
+            self.metrics.record_action(
+                action.name,
+                task_id=action.task_id,
+                success=False,
+                retry=retry,
+            )
             self.metrics.tick(AutomationState.RECOVER)
             return CycleResult(
                 CycleStatus.EXECUTION_FAILED,
@@ -204,7 +249,12 @@ class V0Orchestrator:
                 keeper_decision=decision,
             )
         except Exception as exc:
-            self.metrics.record_action(action.name, success=False, retry=action.retry)
+            self.metrics.record_action(
+                action.name,
+                task_id=action.task_id,
+                success=False,
+                retry=retry,
+            )
             self.metrics.tick(AutomationState.RECOVER)
             return CycleResult(
                 CycleStatus.EXECUTION_FAILED,
@@ -219,7 +269,12 @@ class V0Orchestrator:
         self._record_special_state(after)
         verification = action.verify(before.state, after.state)
         success = verification.verdict is Verdict.PASS
-        self.metrics.record_action(action.name, success=success, retry=action.retry)
+        self.metrics.record_action(
+            action.name,
+            task_id=action.task_id,
+            success=success,
+            retry=retry,
+        )
 
         if not success:
             self.metrics.tick(AutomationState.RECOVER)
@@ -254,15 +309,26 @@ class V0Orchestrator:
 
         last_result: CycleResult | None = None
         completed = 0
+        consecutive_failures = 0
         stop_statuses = {CycleStatus.EMERGENCY_STOP, CycleStatus.NEEDS_HUMAN}
+        failure_statuses = {CycleStatus.EXECUTION_FAILED, CycleStatus.VERIFICATION_FAILED}
         while max_cycles is None or completed < max_cycles:
             try:
                 last_result = self.run_once()
                 completed += 1
                 if last_result.status in stop_statuses:
                     break
-                if idle_sleep_seconds:
-                    self.sleeper(idle_sleep_seconds)
+                if last_result.status in failure_statuses:
+                    consecutive_failures += 1
+                elif last_result.status is CycleStatus.VERIFIED:
+                    consecutive_failures = 0
+                delay = self.backoff_policy.delay_for(
+                    last_result.status,
+                    base_seconds=idle_sleep_seconds,
+                    consecutive_failures=consecutive_failures,
+                )
+                if delay:
+                    self.sleeper(delay)
             except KeyboardInterrupt as exc:
                 last_result = self._handle_keyboard_interrupt(exc)
                 break
