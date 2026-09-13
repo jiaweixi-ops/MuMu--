@@ -7,7 +7,7 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any
 
-from simcity_ai_mayor.device.adb import AdbRunner, _ADB_WRITE_CAPABILITY
+from simcity_ai_mayor.device.adb import _ADB_WRITE_CAPABILITY, AdbRunner
 
 
 class CommandQueueClosed(RuntimeError):
