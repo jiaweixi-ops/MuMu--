@@ -12,7 +12,10 @@ MuMu 模拟器上的《模拟城市：我是市长》自动化工程。
 - Keeper 对页面采用**白名单**：新增 `ScreenType` 默认拒绝。
 - `device_id` 贯穿 ActionRequest、ADB、数据库和运行时状态。
 - 同一设备只有一个有界 ADB 写队列，并维护单调 `seq`。
-- 业务 ADB 输入只能经 `QueueBoundAdbWriter` 进入写队列；直接 `tap/swipe/back` 会被拒绝。
+- 业务 ADB 输入只能经 `QueueBoundAdbWriter` 进入写队列；直接 `tap/swipe/back`、
+  `shell input` 和原始 `run(["shell", "input", ...])` 都会被拒绝。
+- `V0Orchestrator` 固定执行 `Observe → Plan → Keeper → Queue → Fresh Verify → Metrics`；
+  Verifier 非 `PASS` 时不得推进 Acceptance。
 - ADB 命令有硬超时；重启 adb-server 后 TCP MuMu 设备必须重新 `connect` 并等待上线。
 - V0 仓库 OCR 的 `confidence` 默认是 `0.0`；未显式给出可信度即视为不可信。
 - V0 默认逐件收取；批量收取留到 V1。
@@ -33,7 +36,7 @@ src/simcity_ai_mayor/
   executor/      Keeper 安全闸门
   verifier/      State/Diff 可组合断言
   storage/       SQLite session + acceptance 持久化
-  runtime/       急停、单调时钟、滑动窗口与验收指标
+  runtime/       急停、指标与 V0 Orchestrator 主循环骨架
   phase1/        Phase -1a 环境探测
 docs/            Gate 文档骨架
 playbooks/       交互剧本
@@ -67,6 +70,33 @@ python -m simcity_ai_mayor.phase1.probe ^
 探测器自动记录 Android 版本、SDK、方向相关 dump、截图尺寸漂移、游戏版本、
 冻结帧比例和黑屏比例。长窗口观察采用流式统计，不保留全部帧哈希。MuMu 应用版本、
 窗口/DPI/RDP 行为仍需人工复核并进入基线文档。
+
+## V0 主循环骨架
+
+`runtime/orchestrator.py` 已把基础设施接成一个最小可信闭环：
+
+```text
+Fresh Observe
+↓
+Plan
+↓
+Keeper + RuntimeMetrics.rate_window
+↓
+QueueBoundAdbWriter
+↓
+等待原子动作完成
+↓
+再次 Fresh Observe
+↓
+Diff Verifier
+↓
+PASS 才记录收取/生产成功与 FactoryState 转换
+```
+
+当前 `Observer` 与 `Planner` 是协议接口，故意没有伪造游戏视觉实现。真机阶段需要让
+Observer 每次调用都获取新的 ADB 截图并生成状态，让 Planner 根据该 Observation 返回
+`PlannedAction`。单元测试已经使用真实 Keeper、RuntimeMetrics 与 DeviceCommandQueue
+验证接线；这不等于已经在 MuMu 真机上完成端到端验收。
 
 ## V0 Gate
 
