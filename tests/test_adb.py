@@ -106,3 +106,5 @@ def test_direct_input_write_is_rejected() -> None:
         adb.tap(100, 200)
     with pytest.raises(AdbWriteBypass, match="QueueBoundAdbWriter"):
         adb.shell("input", "tap", "100", "200")
+    with pytest.raises(AdbWriteBypass, match="QueueBoundAdbWriter"):
+        adb.run(["shell", "input", "tap", "100", "200"])
