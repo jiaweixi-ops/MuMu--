@@ -16,6 +16,11 @@ MuMu 模拟器上的《模拟城市：我是市长》自动化工程。
   `shell input` 和原始 `run(["shell", "input", ...])` 都会被拒绝。
 - `V0Orchestrator` 固定执行 `Observe → Plan → Keeper → Queue → Fresh Verify → Metrics`；
   Verifier 非 `PASS` 时不得推进 Acceptance。
+- Observe、Plan 和动作后的 Fresh Observe 出现普通异常时，主循环返回 `OBSERVE_FAILED`、
+  进入 `RECOVER` 并参与指数退避，而不是让一次坏帧或瞬时 ADB 异常终结挂机进程；
+  动作已经执行但 Fresh Observe 失败时，该动作会明确记为失败样本。
+- `run()` 还有最后一道循环级异常兜底；连续未处理循环异常默认达到 5 次时，执行
+  `request_cancel → drain → metrics.flush` 后干净停止，避免真正的程序性错误被无限吞掉。
 - `Observation` 必须携带正数 `frame_id` 与 `captured_at`；动作后的 observation 必须同时满足
   `after.frame_id > before.frame_id` 与 `after.captured_at > before.captured_at`，否则直接进入
   `VERIFICATION_FAILED / RECOVER`，业务 Diff Verifier 不会执行。
@@ -26,8 +31,8 @@ MuMu 模拟器上的《模拟城市：我是市长》自动化工程。
   Orchestrator 的人工清库恢复判定与生产/收取策略共享同一 policy。
 - 同一 `(task_id, action_name)` 上一次执行失败时，下一次自动视为 retry；不同 task 不共享
   retry 链。Keeper 的 `max_retries_per_action` 因此是可达硬门禁，不再依赖 Planner 手工标记。
-- 主循环按结果分级退避：`NO_ACTION` 使用较长等待，`DENIED` 使用中等等待，连续执行/
-  验证失败使用指数退避并封顶；`VERIFIED` 回到基础轮询间隔。
+- 主循环按结果分级退避：`NO_ACTION` 使用较长等待，`DENIED` 使用中等等待，连续观察/
+  执行/验证失败使用指数退避并封顶；`VERIFIED` 回到基础轮询间隔。
 - 动作等待超时使用**瞬时取消**：`request_cancel → drain → clear_cancel`。调用方只有在
   在途原子动作真正结束后才拿回控制权，但写通道会重新打开，下一轮可重新 Observe/Plan。
 - 急停与 Ctrl+C 使用**闩锁取消**：写通道保持 cancelled，不自动 `clear_cancel`；Ctrl+C
@@ -118,6 +123,12 @@ PASS 才记录收取/生产成功与 FactoryState 转换
 Keeper、RuntimeMetrics 与 DeviceCommandQueue 验证接线；这不等于已经在 MuMu 真机上
 完成端到端验收。
 
+Observe/Plan/Fresh Observe 的普通异常会被转换为 `OBSERVE_FAILED`，进入 `RECOVER` 后由
+下一轮重新取状态；`OBSERVE_FAILED` 与执行/验证失败共用指数退避。若错误发生在动作已经
+落地之后的 Fresh Observe，该动作会记为失败，确保 retry、失败率和熔断不会被坏帧绕过。
+`run()` 对真正漏出 `run_once()` 的异常设置独立连续错误计数，默认 5 次后取消并排空写队列、
+flush RuntimeMetrics 后退出。
+
 仓库状态不再由 `state["storage_used"]` 等自由字符串作为主数据源。Observer 应构造
 `StorageCapacity(used, capacity, confidence)` 并放入 `Observation.storage`；Orchestrator 仅在
 调用通用 Diff Verifier 时，通过 `verifier_state()` 投影兼容字段。即使 `state` 中出现冲突的
@@ -128,8 +139,9 @@ Keeper、RuntimeMetrics 与 DeviceCommandQueue 验证接线；这不等于已经
 执行。不同 task 即使 action 名相同，也不会互相消耗 retry 配额。
 
 `run()` 的等待不再是固定节拍。默认以 `idle_sleep_seconds` 为基准：`NO_ACTION` 为 5 倍、
-`DENIED` 为 3 倍；连续 `EXECUTION_FAILED / VERIFICATION_FAILED` 按 1、2、4、8… 倍指数
-退避，并由 `LoopBackoffPolicy.max_failure_seconds` 封顶。成功验证后失败阶数归零。
+`DENIED` 为 3 倍；连续 `OBSERVE_FAILED / EXECUTION_FAILED / VERIFICATION_FAILED` 按
+1、2、4、8… 倍指数退避，并由 `LoopBackoffPolicy.max_failure_seconds` 封顶。成功验证后
+失败阶数归零。
 
 `BLOCKED_STORAGE` 的恢复信号也由主循环机械判定：上一观察进入
 `BLOCKED_STORAGE` 后保持 recovery-pending；只有后续 observation 已离开阻塞、存在 typed
