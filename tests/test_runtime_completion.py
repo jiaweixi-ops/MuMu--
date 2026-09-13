@@ -1,5 +1,3 @@
-from concurrent.futures import Future
-
 from simcity_ai_mayor.core.models import (
     AutomationState,
     FactoryState,
