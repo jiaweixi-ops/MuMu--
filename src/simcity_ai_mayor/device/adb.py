@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_ADB_WRITE_CAPABILITY = object()
 
 
 class AdbError(RuntimeError):
@@ -16,6 +17,10 @@ class AdbError(RuntimeError):
 
 
 class AdbTimeout(AdbError):
+    pass
+
+
+class AdbWriteBypass(AdbError):
     pass
 
 
@@ -104,11 +109,31 @@ class AdbRunner:
             )
         return result
 
-    def shell(self, *args: str, timeout_seconds: float | None = None) -> AdbResult:
+    def shell(
+        self,
+        *args: str,
+        timeout_seconds: float | None = None,
+        _write_capability: object | None = None,
+    ) -> AdbResult:
+        if args and args[0] == "input":
+            self._require_write_capability(_write_capability)
         return self.run(["shell", *args], timeout_seconds=timeout_seconds)
 
-    def tap(self, x: int, y: int) -> None:
-        self.shell("input", "tap", str(x), str(y))
+    def tap(
+        self,
+        x: int,
+        y: int,
+        *,
+        _write_capability: object | None = None,
+    ) -> None:
+        self._require_write_capability(_write_capability)
+        self.shell(
+            "input",
+            "tap",
+            str(x),
+            str(y),
+            _write_capability=_write_capability,
+        )
 
     def swipe(
         self,
@@ -117,7 +142,10 @@ class AdbRunner:
         x2: int,
         y2: int,
         duration_ms: int = 350,
+        *,
+        _write_capability: object | None = None,
     ) -> None:
+        self._require_write_capability(_write_capability)
         self.shell(
             "input",
             "swipe",
@@ -126,10 +154,17 @@ class AdbRunner:
             str(x2),
             str(y2),
             str(duration_ms),
+            _write_capability=_write_capability,
         )
 
-    def back(self) -> None:
-        self.shell("input", "keyevent", "KEYCODE_BACK")
+    def back(self, *, _write_capability: object | None = None) -> None:
+        self._require_write_capability(_write_capability)
+        self.shell(
+            "input",
+            "keyevent",
+            "KEYCODE_BACK",
+            _write_capability=_write_capability,
+        )
 
     def screenshot_png(self) -> bytes:
         last_error: AdbError | None = None
@@ -235,3 +270,10 @@ class AdbRunner:
                 timeout_seconds=8.0,
             )
         self.wait_for_device(wait_seconds)
+
+    @staticmethod
+    def _require_write_capability(capability: object | None) -> None:
+        if capability is not _ADB_WRITE_CAPABILITY:
+            raise AdbWriteBypass(
+                "ADB input writes must go through QueueBoundAdbWriter"
+            )
