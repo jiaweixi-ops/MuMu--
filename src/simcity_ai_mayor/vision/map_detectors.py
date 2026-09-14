@@ -7,7 +7,7 @@ from PIL import Image
 
 from simcity_ai_mayor.city.map_model import BuildingSpec, GridPoint, PlacedBuilding
 from simcity_ai_mayor.vision.map_scanner import GridCalibrationLike
-from simcity_ai_mayor.vision.similarity import zero_mean_ncc
+from simcity_ai_mayor.vision.similarity import NccTemplateProfile
 
 
 class MapDetectorConfigError(ValueError):
@@ -50,7 +50,7 @@ class _LoadedPatch:
             template.load()
         if template.width <= 0 or template.height <= 0:
             raise MapDetectorConfigError(f"template has invalid size: {path}")
-        self.template = template
+        self._profile = NccTemplateProfile.from_image(template)
 
     def score_at(
         self,
@@ -61,12 +61,12 @@ class _LoadedPatch:
         anchor_x, anchor_y = calibration.grid_to_pixel(point)
         left = round(anchor_x + self.spec.offset_x_px)
         top = round(anchor_y + self.spec.offset_y_px)
-        right = left + self.template.width
-        bottom = top + self.template.height
+        right = left + self._profile.size[0]
+        bottom = top + self._profile.size[1]
         if left < 0 or top < 0 or right > image.width or bottom > image.height:
             return None
         sample = image.crop((left, top, right, bottom))
-        return zero_mean_ncc(sample, self.template)
+        return self._profile.score(sample)
 
     def matches(
         self,
