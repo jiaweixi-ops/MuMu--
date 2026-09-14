@@ -45,7 +45,10 @@ class ConstructionPlanner:
     """
 
     def build(self, original: CityMap, plan: JointLayoutPlan) -> ConstructionPlan:
-        if original.width != plan.resulting_map.width or original.height != plan.resulting_map.height:
+        if (
+            original.width != plan.resulting_map.width
+            or original.height != plan.resulting_map.height
+        ):
             raise ValueError("original and resulting map dimensions differ")
 
         steps: dict[str, ConstructionStep] = {}
