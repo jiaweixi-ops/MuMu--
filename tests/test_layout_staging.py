@@ -80,10 +80,12 @@ def test_staging_solver_turns_two_building_swap_into_executable_sequence() -> No
 
 def test_staging_solver_replays_ordered_prefix_before_selecting_temp_space() -> None:
     roads = frozenset(GridPoint(x, 1) for x in range(5))
+    blocked = frozenset(GridPoint(x, 2) for x in range(5))
     original = CityMap(
         5,
         3,
         roads=roads,
+        blocked=blocked,
         buildings=(
             building("a", 0, 0),
             building("b", 1, 0),
@@ -94,6 +96,7 @@ def test_staging_solver_replays_ordered_prefix_before_selecting_temp_space() -> 
         5,
         3,
         roads=roads,
+        blocked=blocked,
         buildings=(
             building("a", 1, 0),
             building("b", 0, 0),
