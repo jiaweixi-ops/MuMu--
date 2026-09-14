@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from simcity_ai_mayor.city.map_model import CityMap, GridPoint
+from simcity_ai_mayor.city.map_model import CityMap
 from simcity_ai_mayor.layout.optimizer import LayoutMove, LayoutOptimizer
 from simcity_ai_mayor.layout.road_optimizer import RoadEdit, RoadTopologyOptimizer
 from simcity_ai_mayor.layout.scorer import LayoutScore, LayoutScorer
@@ -64,13 +64,13 @@ class JointLayoutOptimizer:
         for _ in range(self.config.max_rounds):
             round_start = current_score.total
 
-            building_plan = self.building_optimizer.optimize(current)
+            building_plan = self.building_optimizer.optimize(
+                current,
+                baseline_origins=baseline_origins,
+            )
             if building_plan.after.total > current_score.total + self.config.min_improvement:
                 current = building_plan.resulting_map
-                current_score = self.scorer.score(
-                    current,
-                    baseline_origins=baseline_origins,
-                )
+                current_score = building_plan.after
 
             road_plan = self.road_optimizer.optimize(
                 current,
