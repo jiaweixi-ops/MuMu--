@@ -24,10 +24,9 @@ class StagingResolution:
 class StagingSolver:
     """Resolve pure MOVE_BUILDING dependency cycles using temporary free cells.
 
-    The solver never stages onto another building's current or final footprint and only
-    uses cells with road access in the *current* road network. Cycles involving road
-    construction remain unresolved because resolving them safely requires live UI/map
-    knowledge about when a new road becomes usable.
+    The solver first replays the already ordered construction prefix, so staging is
+    chosen from the occupancy and road topology that will actually exist when the cycle
+    is reached. Dependencies on unresolved non-move steps are never guessed through.
     """
 
     def resolve(
@@ -45,11 +44,11 @@ class StagingSolver:
             if step.kind is ConstructionStepKind.MOVE_BUILDING
             and step.building_id is not None
         }
-        unresolved_other = tuple(
+        unresolved_other = [
             step
             for step in construction.unresolved_steps
             if step.kind is not ConstructionStepKind.MOVE_BUILDING
-        )
+        ]
         if not unresolved_moves:
             return StagingResolution(construction, ())
 
@@ -64,9 +63,10 @@ class StagingSolver:
         if set(unresolved_moves) - set(target_by_id):
             raise ValueError("unresolved move references unknown target building")
 
+        current_city = self._replay_prefix(original, construction.ordered_steps)
         current_positions = {
-            building_id: building.origin
-            for building_id, building in original_by_id.items()
+            building.spec.building_id: building.origin
+            for building in current_city.buildings
         }
         pending = dict(unresolved_moves)
         resolved_steps: list[ConstructionStep] = list(construction.ordered_steps)
@@ -75,10 +75,13 @@ class StagingSolver:
         stage_counter = 0
 
         while pending:
+            pending_step_ids = {step.step_id for step in pending.values()}
             ready_id = self._first_ready_move(
                 pending,
                 current_positions,
                 original_by_id,
+                completed_ids,
+                pending_step_ids,
             )
             if ready_id is not None:
                 step = pending.pop(ready_id)
@@ -89,10 +92,18 @@ class StagingSolver:
                 completed_ids.add(step.step_id)
                 continue
 
-            pivot_id = sorted(pending)[0]
+            eligible_pivots = [
+                building_id
+                for building_id, step in pending.items()
+                if self._external_dependencies(step, pending_step_ids) <= completed_ids
+            ]
+            if not eligible_pivots:
+                break
+
+            pivot_id = min(eligible_pivots)
             pivot = original_by_id[pivot_id]
             staging = self._find_staging_cell(
-                original,
+                current_city,
                 pivot,
                 current_positions,
                 original_by_id,
@@ -113,15 +124,20 @@ class StagingSolver:
                 )
             )
             current_positions[pivot_id] = staging
+            completed_ids.add(stage_id)
             staging_points.append((pivot_id, staging))
 
         remaining: list[ConstructionStep] = list(pending.values())
-        for step in unresolved_other:
-            if set(step.depends_on) <= completed_ids:
-                resolved_steps.append(step)
-                completed_ids.add(step.step_id)
-            else:
-                remaining.append(step)
+        made_progress = True
+        while unresolved_other and made_progress:
+            made_progress = False
+            for step in tuple(sorted(unresolved_other, key=lambda item: item.step_id)):
+                if set(step.depends_on) <= completed_ids:
+                    resolved_steps.append(step)
+                    completed_ids.add(step.step_id)
+                    unresolved_other.remove(step)
+                    made_progress = True
+        remaining.extend(unresolved_other)
 
         sorted_remaining = tuple(sorted(remaining, key=lambda step: step.step_id))
         return StagingResolution(
@@ -135,15 +151,26 @@ class StagingSolver:
             raise ValueError(f"move step {step.step_id!r} has no destination")
         return step.destination
 
+    @staticmethod
+    def _external_dependencies(
+        step: ConstructionStep,
+        pending_move_step_ids: set[str],
+    ) -> set[str]:
+        return set(step.depends_on) - pending_move_step_ids
+
     def _first_ready_move(
         self,
         pending: dict[str, ConstructionStep],
         current_positions: dict[str, GridPoint],
         original_by_id: dict[str, PlacedBuilding],
+        completed_ids: set[str],
+        pending_step_ids: set[str],
     ) -> str | None:
         occupied = self._occupied_by(current_positions, original_by_id)
         for building_id in sorted(pending):
             step = pending[building_id]
+            if self._external_dependencies(step, pending_step_ids) - completed_ids:
+                continue
             destination = self._required_destination(step)
             footprint = self._footprint_at(original_by_id[building_id], destination)
             blockers = {
@@ -207,6 +234,36 @@ class StagingSolver:
                 point.x,
             ),
         )
+
+    @staticmethod
+    def _replay_prefix(
+        city: CityMap,
+        steps: tuple[ConstructionStep, ...],
+    ) -> CityMap:
+        current = city
+        for step in steps:
+            if step.kind is ConstructionStepKind.MOVE_BUILDING:
+                if step.building_id is None or step.destination is None:
+                    raise ValueError(f"invalid move prefix step: {step.step_id!r}")
+                if step.source is not None:
+                    actual = current.building(step.building_id).origin
+                    if actual != step.source:
+                        raise ValueError(
+                            f"prefix step {step.step_id!r} source {step.source} "
+                            f"!= current origin {actual}"
+                        )
+                current = current.move_building(step.building_id, step.destination)
+                continue
+
+            if step.point is None:
+                raise ValueError(f"road prefix step {step.step_id!r} has no point")
+            if step.kind is ConstructionStepKind.BUILD_ROAD:
+                current = replace(current, roads=current.roads | {step.point})
+            elif step.kind is ConstructionStepKind.REMOVE_ROAD:
+                current = replace(current, roads=current.roads - {step.point})
+            else:
+                raise ValueError(f"unsupported prefix step kind: {step.kind!r}")
+        return current
 
     @staticmethod
     def _occupied_by(
