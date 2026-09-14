@@ -17,7 +17,7 @@ from simcity_ai_mayor.runtime.orchestrator import (
     PlannedAction,
     PlanningResult,
 )
-from simcity_ai_mayor.verifier.predicates import state_transition, storage_delta
+from simcity_ai_mayor.verifier.predicates import Verdict, state_transition, storage_delta
 
 
 class SessionOutputStore(Protocol):
@@ -26,6 +26,8 @@ class SessionOutputStore(Protocol):
     def item_output(self, device_id: str, item: str) -> int: ...
 
     def record_output(self, device_id: str, item: str, count: int = 1) -> None: ...
+
+    def release_output(self, device_id: str, item: str, count: int = 1) -> None: ...
 
 
 class StorageTransitionGate(Protocol):
@@ -175,20 +177,30 @@ class V0Planner:
             return PlanningResult(None, decision.state, decision.reason)
 
         def execute(writer):
-            # Debit before the device write. This is intentionally conservative: an
-            # uncertain/failed write may consume quota, but can never bypass session caps.
+            # Reserve before the device write so crashes/ambiguous timeouts can never
+            # under-count production and bypass persistent session caps.
             self.session_store.record_output(self.device_id, recipe.item, 1)
             return writer.tap(recipe.tap.x, recipe.tap.y)
+
+        production_transition = state_transition(
+            "factory_state",
+            FactoryState.IDLE.value,
+            FactoryState.PRODUCING.value,
+        )
+
+        def verify(before, after):
+            result = production_transition(before, after)
+            if result.verdict is Verdict.FAIL:
+                # A trustworthy fresh frame explicitly proved the production did not
+                # start, so the conservative pre-reservation can safely be released.
+                self.session_store.release_output(self.device_id, recipe.item, 1)
+            return result
 
         return PlannedAction(
             task_id=f"v0:produce:{recipe.item}",
             name=f"produce_{recipe.item}",
             risk=RiskLevel.L0,
             execute=execute,
-            verify=state_transition(
-                "factory_state",
-                FactoryState.IDLE.value,
-                FactoryState.PRODUCING.value,
-            ),
+            verify=verify,
             acceptance_event=AcceptanceEvent.PRODUCE,
         )
