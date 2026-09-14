@@ -5,11 +5,8 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Protocol
 
-from simcity_ai_mayor.city.identity import (
-    BuildingIdentityReconciler,
-    IdentityReconciliationError,
-)
-from simcity_ai_mayor.city.map_model import CityMap
+from simcity_ai_mayor.city.identity import BuildingIdentityReconciler
+from simcity_ai_mayor.city.map_model import CityMap, GridPoint
 from simcity_ai_mayor.layout.construction import (
     ConstructionPlan,
     ConstructionStep,
@@ -51,13 +48,7 @@ class ConstructionExecutionReport:
 
 
 class ConstructionExecutor:
-    """Execute a construction plan one verified physical step at a time.
-
-    After every action the executor requires a fresh CityMap scan, restores stable
-    building identities, computes the exact expected map transition and refuses to
-    continue if *anything* else changed. The game-specific adapter owns gestures; this
-    state machine owns ordering, preconditions and fail-closed verification.
-    """
+    """Execute a construction plan one verified physical step at a time."""
 
     def __init__(
         self,
@@ -120,7 +111,7 @@ class ConstructionExecutor:
                     tuple(completed),
                     failed_step=step,
                     error=(
-                        f"step dependencies are incomplete: "
+                        "step dependencies are incomplete: "
                         f"{sorted(missing_dependencies)!r}"
                     ),
                 )
@@ -147,11 +138,10 @@ class ConstructionExecutor:
                     error=f"action failed: {type(exc).__name__}: {exc}",
                 )
 
-            expected_moves = self._expected_moves(step)
             try:
                 observed = self._scan_and_reconcile(
                     current,
-                    expected_moves=expected_moves,
+                    expected_moves=self._expected_moves(step),
                 )
             except Exception as exc:
                 return ConstructionExecutionReport(
@@ -193,20 +183,17 @@ class ConstructionExecutor:
         self,
         previous: CityMap,
         *,
-        expected_moves: dict[str, object],
+        expected_moves: dict[str, GridPoint],
     ) -> CityMap:
         scanned = self.scanner.scan()
-        try:
-            return self.reconciler.reconcile(
-                previous,
-                scanned,
-                expected_moves=expected_moves,
-            ).city
-        except IdentityReconciliationError:
-            raise
+        return self.reconciler.reconcile(
+            previous,
+            scanned,
+            expected_moves=expected_moves,
+        ).city
 
     @staticmethod
-    def _expected_moves(step: ConstructionStep) -> dict[str, object]:
+    def _expected_moves(step: ConstructionStep) -> dict[str, GridPoint]:
         if step.kind is not ConstructionStepKind.MOVE_BUILDING:
             return {}
         if step.building_id is None or step.destination is None:
