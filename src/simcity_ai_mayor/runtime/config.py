@@ -13,6 +13,7 @@ from simcity_ai_mayor.vision.readers import (
     ScreenTemplateRule,
     TemplateAnchorSpec,
 )
+from simcity_ai_mayor.vision.storage_validation import StorageValidationPolicy
 
 
 class RuntimeConfigError(ValueError):
@@ -27,6 +28,7 @@ class VisionRuntimeConfig:
     storage_screens: frozenset[ScreenType] = frozenset(
         {ScreenType.FACTORY, ScreenType.STORAGE}
     )
+    storage_validation: StorageValidationPolicy = StorageValidationPolicy()
     screen_ambiguity_margin: float = 0.02
     factory_ambiguity_margin: float = 0.02
 
@@ -46,6 +48,7 @@ class AppConfig:
     expected_game_version: str | None
     policy: V0Policy
     vision: VisionRuntimeConfig
+    enter_factory_tap: TapPoint | None
     collect_tap: TapPoint | None
     production: ProductionRecipe | None
 
@@ -93,6 +96,7 @@ class AppConfig:
         planner_raw = raw.get("planner", {})
         if not isinstance(planner_raw, dict):
             raise RuntimeConfigError("planner must be an object")
+        enter_factory_tap = _optional_tap(planner_raw.get("enter_factory_tap"))
         collect_tap = _optional_tap(planner_raw.get("collect_tap"))
         production = _optional_production(planner_raw.get("production"))
 
@@ -110,6 +114,7 @@ class AppConfig:
             expected_game_version=expected_game_version,
             policy=policy,
             vision=vision,
+            enter_factory_tap=enter_factory_tap,
             collect_tap=collect_tap,
             production=production,
         )
@@ -119,7 +124,8 @@ def _parse_vision(base: Path, raw: Any) -> VisionRuntimeConfig:
     if not isinstance(raw, dict):
         raise RuntimeConfigError("vision must be an object")
     screen_rules = tuple(
-        _parse_screen_rule(base, item) for item in _list(raw.get("screens", []), "vision.screens")
+        _parse_screen_rule(base, item)
+        for item in _list(raw.get("screens", []), "vision.screens")
     )
     factory_rules = tuple(
         _parse_factory_rule(base, item)
@@ -129,6 +135,7 @@ def _parse_vision(base: Path, raw: Any) -> VisionRuntimeConfig:
     storage_raw = raw.get("storage")
     storage_roi: Roi | None = None
     storage_screens = frozenset({ScreenType.FACTORY, ScreenType.STORAGE})
+    validation_policy = StorageValidationPolicy()
     if storage_raw is not None:
         if not isinstance(storage_raw, dict):
             raise RuntimeConfigError("vision.storage must be an object")
@@ -137,12 +144,30 @@ def _parse_vision(base: Path, raw: Any) -> VisionRuntimeConfig:
         storage_screens = frozenset(
             ScreenType(str(value)) for value in _list(screens_raw, "vision.storage.screens")
         )
+        validation_raw = storage_raw.get("validation", {})
+        if not isinstance(validation_raw, dict):
+            raise RuntimeConfigError("vision.storage.validation must be an object")
+        try:
+            validation_policy = StorageValidationPolicy(
+                min_engine_confidence=_bounded_float(
+                    validation_raw.get("min_engine_confidence", 0.80),
+                    "vision.storage.validation.min_engine_confidence",
+                    0.0,
+                    1.0,
+                ),
+                allow_capacity_increase=bool(
+                    validation_raw.get("allow_capacity_increase", True)
+                ),
+            )
+        except ValueError as exc:
+            raise RuntimeConfigError(f"invalid storage validation policy: {exc}") from exc
 
     return VisionRuntimeConfig(
         screen_rules=screen_rules,
         factory_rules=factory_rules,
         storage_roi=storage_roi,
         storage_screens=storage_screens,
+        storage_validation=validation_policy,
         screen_ambiguity_margin=_bounded_float(
             raw.get("screen_ambiguity_margin", 0.02),
             "vision.screen_ambiguity_margin",
