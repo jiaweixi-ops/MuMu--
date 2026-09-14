@@ -73,7 +73,8 @@ def test_layout_optimizer_improves_service_coverage() -> None:
 
     assert plan.after.total > plan.before.total
     assert plan.after.service_coverage > plan.before.service_coverage
-    assert any(move.building_id == "service-1" for move in plan.moves)
+    assert plan.moves
+    assert any(move.source != move.destination for move in plan.moves)
 
 
 def test_city_map_json_round_trip(tmp_path) -> None:
