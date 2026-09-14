@@ -1,6 +1,6 @@
-# Map Scan → CityMap → Layout Plan
+# Map Scan → CityMap → Layout Plan → Verified Construction
 
-本文件定义当前仓库的整城地图识别与布局优化软件链路。**这里的“最佳布局”指在当前约束、
+本文件定义当前仓库的整城地图识别、布局优化与施工验证软件链路。**这里的“最佳布局”指在当前约束、
 权重和有限搜索空间内找到的最佳候选，不代表对 SimCity 全局布局问题的数学最优证明。**
 
 ## 1. 当前已实现链路
@@ -32,7 +32,15 @@ JointLayoutPlan
         ↓
 ConstructionPlanner
         ↓
-有依赖顺序的 BUILD_ROAD / MOVE_BUILDING / REMOVE_ROAD 步骤
+StagingSolver（纯建筑移动环自动解环）
+        ↓
+BUILD_ROAD / MOVE_BUILDING / REMOVE_ROAD 有序步骤
+        ↓
+ConstructionExecutor
+        ↓
+执行 1 步 → fresh map scan → BuildingIdentityReconciler
+        ↓
+精确 CityMap diff PASS 才进入下一步
 ```
 
 软件入口：
@@ -161,7 +169,7 @@ Phase -1b 至少要人工标出 3 个已知逻辑格点，验证仿射模型在�
 `JointLayoutOptimizer` 在固定原始 move-cost baseline 下交替执行建筑迁移和道路优化，直到没有
 足够提升或达到轮数上限。
 
-## 7. 施工计划
+## 7. 施工计划、staging 与身份稳定化
 
 `ConstructionPlanner` 将最终目标转换为依赖图：
 
@@ -170,18 +178,69 @@ Phase -1b 至少要人工标出 3 个已知逻辑格点，验证仿射模型在�
 - 目标位置被其他待移动建筑占用时，存在 move→move 依赖；
 - REMOVE_ROAD 默认排在所有建筑迁移和道路新增之后。
 
-若出现 A/B 建筑互换等依赖环，系统**不会伪造可执行顺序**，而是：
+### StagingSolver
+
+A/B 建筑互换等纯 MOVE_BUILDING 环现在会进入 `StagingSolver`：
+
+1. 先回放已经排好序的施工前缀，得到真实的当时占用与道路拓扑；
+2. 只从当前空闲、非 blocked、非道路、具有道路接入且不占最终目标 footprint 的位置选临时位；
+3. 生成 `staging:<building>:N` 临时迁移；
+4. 让其他建筑依次让位；
+5. 最后把 staging 建筑搬入正式目标位。
+
+如果依赖环包含尚未完成的道路步骤，求解器保持 `unresolved_steps`，不会用猜测顺序穿越混合依赖。
+
+### BuildingIdentityReconciler
+
+模板扫描 ID 会随坐标变化，例如 `residential@12,8 → residential@15,9`。施工时不能把它当成新建筑。
+`BuildingIdentityReconciler` 使用 fail-closed 规则恢复稳定 ID：
+
+- 未声明移动的建筑必须仍在原位置；
+- 当前步骤声明移动的建筑必须精确出现在目标位置；
+- catalog/template 前缀、类别、footprint、人口/覆盖/污染/交通等 fingerprint 必须一致；
+- 建筑数变化、缺失、多候选、未知移动全部拒绝，不做最近邻猜测。
+
+这使大量同类住宅在连续重扫时也不会因为“谁离谁近”而静默串 ID。
+
+## 8. ConstructionExecutor：一步一重扫
+
+`ConstructionExecutor` 是通用施工状态机，游戏具体手势由 `ConstructionActionAdapter` 提供，
+真实地图重扫由 `LiveCityMapScanner` 提供。状态机本身已经实现：
 
 ```text
-requires_staging = true
-unresolved_steps = [...]
+验证 live baseline
+↓
+检查 step dependency / source / destination / road precondition
+↓
+adapter.execute(step)
+↓
+fresh LiveCityMapScanner.scan()
+↓
+BuildingIdentityReconciler
+↓
+计算该步骤唯一允许的 expected CityMap
+↓
+observed == expected ?
+    YES → 记录完成，进入下一步
+    NO  → VERIFICATION_FAILED，立即停止
 ```
 
-后续真机施工层必须先找到并验证临时空地，再解除该环。
+精确差分语义：
 
-## 8. 仍需 Phase -1b 真机完成的内容
+- MOVE_BUILDING：只允许指定建筑从 source 到 destination；道路、blocked、其他建筑不得变化；
+- BUILD_ROAD：只允许指定道路格新增；
+- REMOVE_ROAD：只允许指定道路格消失；
+- fresh scan / identity reconciliation 失败时不推进；
+- action 抛异常时立即停止，不执行下一步；
+- `stop_requested` 在步骤前检查；动作已发出后仍先做 fresh verify，再安全停止；
+- `ConstructionPlan` 仍有 unresolved steps 时，executor 在接触游戏前直接 `BLOCKED_UNRESOLVED`。
 
-软件链路已存在，但以下数据不能靠代码猜：
+真实 `ConstructionActionAdapter` 接入时仍必须遵守项目既有安全架构：风险动作经过 Keeper，实际 ADB
+输入进入 `QueueBoundAdbWriter` 单写队列；不能为施工层重新打开 raw `adb shell input` 旁路。
+
+## 9. 仍需 Phase -1b 真机完成的内容
+
+软件核心链路已经存在，但以下数据和游戏交互不能靠代码猜：
 
 - 实际 MuMu / 游戏分辨率、缩放和地图方向；
 - 仿射 origin / X basis / Y basis；
@@ -191,19 +250,30 @@ unresolved_steps = [...]
 - 白天、夜晚、昼夜过渡的正样本；
 - 易混淆建筑/道路的负样本；
 - 每个模板的 threshold 与 ambiguity / 误检统计；
-- 各建筑真实 footprint、覆盖、污染、人口、交通负荷等 catalog 数据。
+- 各建筑真实 footprint、覆盖、污染、人口、交通负荷等 catalog 数据；
+- MOVE_BUILDING 真实 UI/手势 playbook；
+- BUILD_ROAD 真实 UI/手势 playbook；
+- REMOVE_ROAD 真实 UI/手势 playbook；
+- 真实施工后的地图重扫范围、相机定位与地图视野复位流程。
 
 正式 AUTO 前应先用人工标注截图计算 precision / recall，并对 `CityMap` 做人工逐格核对。
 
-## 9. 当前尚未实现的最后一段
+## 10. 当前软件边界
 
-`ConstructionPlan` 目前是**离线施工计划**，还没有接入真机 ADB 的：
+截至当前版本，**不依赖真实游戏坐标即可完成的软件核心已经收口**：
 
-- MOVE_BUILDING playbook；
-- BUILD_ROAD playbook；
-- REMOVE_ROAD playbook；
-- 每一步 fresh screenshot / map-diff verifier；
-- staging 自动求解与施工；
-- 建筑跨帧永久身份 reconciliation。
+```text
+截图数字化框架
+→ 多视野 CityMap
+→ 布局评分
+→ 建筑/道路联合优化
+→ 施工依赖图
+→ staging 解环
+→ 跨扫描稳定身份
+→ 一步一重扫
+→ 精确 map-diff fail-closed verifier
+```
 
-这些必须基于真实游戏 UI 行为与真机截图施工，不能使用猜测坐标。
+下一阶段不是继续虚构更多算法，而是 Phase -1b：把真实模板、仿射标定、真实建筑 catalog 与三个施工
+playbook 填进现有接口，然后在独立测试账号上做真机 Gate。没有这些实测数据时，不应伪造
+MOVE_BUILDING / BUILD_ROAD / REMOVE_ROAD 的点击坐标或宣称已经完成真机自动重排。
