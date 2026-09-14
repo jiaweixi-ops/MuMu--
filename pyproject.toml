@@ -14,6 +14,7 @@ dependencies = [
 
 [project.scripts]
 simcity-v0 = "simcity_ai_mayor.runtime.app:main"
+simcity-layout = "simcity_ai_mayor.layout.app:main"
 
 [project.optional-dependencies]
 dev = [
