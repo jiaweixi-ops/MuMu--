@@ -28,6 +28,10 @@ class SessionOutputStore(Protocol):
     def record_output(self, device_id: str, item: str, count: int = 1) -> None: ...
 
 
+class StorageTransitionGate(Protocol):
+    def expect_delta(self, minimum: int, maximum: int) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class TapPoint:
     x: int
@@ -49,7 +53,7 @@ class ProductionRecipe:
 
 
 class V0Planner:
-    """Minimal factory planner: collect one item or start one configured recipe."""
+    """Minimal navigation + factory planner for the trusted V0 loop."""
 
     def __init__(
         self,
@@ -57,16 +61,20 @@ class V0Planner:
         device_id: str,
         session_store: SessionOutputStore,
         policy: V0Policy | None = None,
+        enter_factory_tap: TapPoint | None = None,
         collect_tap: TapPoint | None = None,
         production: ProductionRecipe | None = None,
+        storage_gate: StorageTransitionGate | None = None,
     ) -> None:
         if not device_id.strip():
             raise ValueError("device_id is required")
         self.device_id = device_id
         self.session_store = session_store
         self.policy = policy or V0Policy()
+        self.enter_factory_tap = enter_factory_tap
         self.collect_tap = collect_tap
         self.production = production
+        self.storage_gate = storage_gate
 
     def plan(self, observation: Observation) -> PlannedAction | PlanningResult | None:
         if observation.device_id != self.device_id:
@@ -74,6 +82,8 @@ class V0Planner:
                 f"observation device {observation.device_id!r} != planner device "
                 f"{self.device_id!r}"
             )
+        if observation.screen is ScreenType.CITY:
+            return self._plan_enter_factory()
         if observation.screen is not ScreenType.FACTORY:
             return None
         if observation.storage is None:
@@ -95,6 +105,26 @@ class V0Planner:
             return self._plan_production(observation)
         return None
 
+    def _plan_enter_factory(self) -> PlannedAction | PlanningResult:
+        if self.enter_factory_tap is None:
+            return PlanningResult(
+                None,
+                AutomationState.RECOVER,
+                "CITY detected but enter_factory_tap is not configured",
+            )
+        point = self.enter_factory_tap
+        return PlannedAction(
+            task_id="v0:enter_factory",
+            name="enter_factory",
+            risk=RiskLevel.L0,
+            execute=lambda writer: writer.tap(point.x, point.y),
+            verify=state_transition(
+                "screen",
+                ScreenType.CITY.value,
+                ScreenType.FACTORY.value,
+            ),
+        )
+
     def _plan_collect(self, observation: Observation) -> PlannedAction | PlanningResult:
         assert observation.storage is not None
         decision = can_collect_one(observation.storage, self.policy)
@@ -113,11 +143,17 @@ class V0Planner:
             )
 
         point = self.collect_tap
+
+        def execute(writer):
+            if self.storage_gate is not None:
+                self.storage_gate.expect_delta(1, 1)
+            return writer.tap(point.x, point.y)
+
         return PlannedAction(
             task_id="v0:collect_factory",
             name="collect_factory",
             risk=RiskLevel.L0,
-            execute=lambda writer: writer.tap(point.x, point.y),
+            execute=execute,
             verify=storage_delta(1, 1),
             acceptance_event=AcceptanceEvent.COLLECT,
         )
@@ -139,8 +175,8 @@ class V0Planner:
             return PlanningResult(None, decision.state, decision.reason)
 
         def execute(writer):
-            # Debit the cap before sending the tap. If the ADB tap fails, over-counting is
-            # conservative and cannot be used to bypass the persistent session cap.
+            # Debit before the device write. This is intentionally conservative: an
+            # uncertain/failed write may consume quota, but can never bypass session caps.
             self.session_store.record_output(self.device_id, recipe.item, 1)
             return writer.tap(recipe.tap.x, recipe.tap.y)
 
