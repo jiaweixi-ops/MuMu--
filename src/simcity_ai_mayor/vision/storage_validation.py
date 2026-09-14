@@ -37,8 +37,9 @@ class ValidatedStorageReader:
     The wrapped reader provides engine confidence. This layer turns repeated identical
     readings into a measurement confidence using ``1 - product(1-c_i)``. A changed
     ``used`` value is accepted only when an expected action delta has been registered,
-    or when a one-shot manual rebase was explicitly allowed (used for human warehouse
-    clearing). Capacity may increase when configured, but never silently decreases.
+    or when a one-shot manual rebase was explicitly allowed. A decrease from a known
+    full warehouse is also safe to rebase because it can only create free capacity.
+    Capacity may increase when configured, but never silently decreases.
     """
 
     def __init__(
@@ -82,6 +83,7 @@ class ValidatedStorageReader:
             )
             return None
         if raw.confidence < self.policy.min_engine_confidence:
+            self._expected_delta = None
             self._diagnostics = StorageValidationDiagnostics(
                 raw.confidence,
                 0.0,
@@ -89,6 +91,10 @@ class ValidatedStorageReader:
                 "engine confidence below validation floor",
             )
             return StorageCapacity(raw.used, raw.capacity, 0.0)
+
+        expected_delta = self._expected_delta
+        self._expected_delta = None
+        reason = "stable reading"
 
         if self._baseline is not None:
             if raw.capacity < self._baseline.capacity:
@@ -110,10 +116,13 @@ class ValidatedStorageReader:
 
             used_delta = raw.used - self._baseline.used
             if used_delta != 0:
-                if self._delta_is_expected(used_delta):
-                    self._expected_delta = None
+                if self._delta_is_expected(used_delta, expected_delta):
+                    reason = f"storage delta {used_delta} matched expected action"
                 elif self._manual_rebase_allowed and used_delta < 0:
                     self._manual_rebase_allowed = False
+                    reason = "storage decrease accepted by one-shot manual rebase"
+                elif self._baseline.free == 0 and used_delta < 0:
+                    reason = "storage decrease from full baseline treated as safe manual clear"
                 else:
                     self._diagnostics = StorageValidationDiagnostics(
                         raw.confidence,
@@ -122,20 +131,26 @@ class ValidatedStorageReader:
                         f"unexplained storage used delta {used_delta}",
                     )
                     return StorageCapacity(raw.used, raw.capacity, 0.0)
+            elif raw.capacity > self._baseline.capacity:
+                reason = "capacity increase accepted and requires fresh confidence fusion"
 
         measurement_confidence, stable_frames = self._accept(raw)
         self._diagnostics = StorageValidationDiagnostics(
             raw.confidence,
             measurement_confidence,
             stable_frames,
-            "trusted transition; confidence fused across stable frames",
+            reason,
         )
         return StorageCapacity(raw.used, raw.capacity, measurement_confidence)
 
-    def _delta_is_expected(self, delta: int) -> bool:
-        if self._expected_delta is None:
+    @staticmethod
+    def _delta_is_expected(
+        delta: int,
+        expected: tuple[int, int] | None,
+    ) -> bool:
+        if expected is None:
             return False
-        minimum, maximum = self._expected_delta
+        minimum, maximum = expected
         return minimum <= delta <= maximum
 
     def _accept(self, raw: StorageCapacity) -> tuple[float, int]:
