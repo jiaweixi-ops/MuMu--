@@ -23,6 +23,17 @@
     "factory_ambiguity_margin": 0.02,
     "screens": [
       {
+        "screen": "CITY",
+        "anchors": [
+          {
+            "roi": [0, 0, 100, 60],
+            "template": "../data/phase_minus1/templates/city_anchor.png",
+            "threshold": 0.92,
+            "weight": 1.0
+          }
+        ]
+      },
+      {
         "screen": "FACTORY",
         "anchors": [
           {
@@ -36,7 +47,11 @@
     ],
     "storage": {
       "roi": [0, 0, 160, 48],
-      "screens": ["FACTORY", "STORAGE"]
+      "screens": ["FACTORY", "STORAGE"],
+      "validation": {
+        "min_engine_confidence": 0.8,
+        "allow_capacity_increase": true
+      }
     },
     "factory_states": [
       {
@@ -86,6 +101,7 @@
     ]
   },
   "planner": {
+    "enter_factory_tap": [0, 0],
     "collect_tap": [0, 0],
     "production": {
       "item": "metal",
