@@ -57,11 +57,29 @@ class LayoutOptimizer:
         self.scorer = scorer
         self.config = config or LayoutOptimizerConfig()
 
-    def optimize(self, city: CityMap) -> LayoutPlan:
-        baseline_origins = {
-            building.spec.building_id: building.origin for building in city.buildings
+    def optimize(
+        self,
+        city: CityMap,
+        *,
+        baseline_origins: Mapping[str, GridPoint] | None = None,
+    ) -> LayoutPlan:
+        origins = (
+            dict(baseline_origins)
+            if baseline_origins is not None
+            else {
+                building.spec.building_id: building.origin
+                for building in city.buildings
+            }
+        )
+        missing = {
+            building.spec.building_id
+            for building in city.buildings
+            if building.spec.building_id not in origins
         }
-        before = self.scorer.score(city, baseline_origins=baseline_origins)
+        if missing:
+            raise ValueError(f"baseline origins missing buildings: {sorted(missing)}")
+
+        before = self.scorer.score(city, baseline_origins=origins)
         current = city
         current_score = before
 
@@ -72,7 +90,7 @@ class LayoutOptimizer:
                     current,
                     building_id,
                     current_score,
-                    baseline_origins,
+                    origins,
                 )
                 changed = changed or moved
             if not changed:
@@ -81,11 +99,11 @@ class LayoutOptimizer:
         moves = tuple(
             LayoutMove(
                 building_id=building.spec.building_id,
-                source=baseline_origins[building.spec.building_id],
+                source=origins[building.spec.building_id],
                 destination=building.origin,
             )
             for building in current.buildings
-            if building.origin != baseline_origins[building.spec.building_id]
+            if building.origin != origins[building.spec.building_id]
         )
         return LayoutPlan(before=before, after=current_score, moves=moves, resulting_map=current)
 
