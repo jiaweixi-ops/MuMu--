@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping
 
 from simcity_ai_mayor.city.map_model import CityMap, GridPoint
 from simcity_ai_mayor.layout.scorer import LayoutScore, LayoutScorer
