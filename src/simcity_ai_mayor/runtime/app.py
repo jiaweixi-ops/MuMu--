@@ -13,7 +13,8 @@ from simcity_ai_mayor.runtime.config import AppConfig, RuntimeConfigError
 from simcity_ai_mayor.runtime.emergency_stop import EmergencyStop
 from simcity_ai_mayor.runtime.metrics import RuntimeMetrics
 from simcity_ai_mayor.runtime.orchestrator import CycleStatus, V0Orchestrator
-from simcity_ai_mayor.storage.session_store import MetricsLeaseConflict, SessionStore
+from simcity_ai_mayor.storage.quota_store import QuotaSessionStore
+from simcity_ai_mayor.storage.session_store import MetricsLeaseConflict
 from simcity_ai_mayor.vision.observer import (
     AdbScreenshotObserver,
     ConservativeAutomationStateResolver,
@@ -47,7 +48,7 @@ def run_app(config: AppConfig, *, duration_seconds: float | None = None) -> int:
     if duration <= 0:
         raise ValueError("duration_seconds must be > 0")
 
-    store = SessionStore(config.state_db)
+    store = QuotaSessionStore(config.state_db)
     metrics: RuntimeMetrics | None = None
     command_queue: DeviceCommandQueue | None = None
     emergency_stop: EmergencyStop | None = None
