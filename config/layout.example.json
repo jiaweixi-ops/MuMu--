@@ -1,0 +1,55 @@
+{
+  "width": 12,
+  "height": 8,
+  "roads": [
+    [5, 0], [5, 1], [5, 2], [5, 3], [5, 4], [5, 5], [5, 6], [5, 7],
+    [0, 4], [1, 4], [2, 4], [3, 4], [4, 4], [6, 4], [7, 4], [8, 4], [9, 4], [10, 4], [11, 4]
+  ],
+  "blocked": [],
+  "buildings": [
+    {
+      "id": "res-1",
+      "kind": "RESIDENTIAL",
+      "origin": [3, 1],
+      "size": [2, 2],
+      "population": 1200,
+      "traffic_load": 1.0,
+      "movable": true
+    },
+    {
+      "id": "res-2",
+      "kind": "RESIDENTIAL",
+      "origin": [6, 1],
+      "size": [2, 2],
+      "population": 1200,
+      "traffic_load": 1.0,
+      "movable": true
+    },
+    {
+      "id": "service-1",
+      "kind": "SERVICE",
+      "origin": [3, 5],
+      "size": [2, 2],
+      "service_radius": 5,
+      "traffic_load": 0.5,
+      "movable": true
+    },
+    {
+      "id": "park-1",
+      "kind": "PARK",
+      "origin": [6, 5],
+      "size": [2, 2],
+      "beauty_radius": 4,
+      "movable": true
+    },
+    {
+      "id": "factory-1",
+      "kind": "INDUSTRIAL",
+      "origin": [9, 2],
+      "size": [2, 2],
+      "pollution": 1.0,
+      "traffic_load": 1.5,
+      "movable": true
+    }
+  ]
+}
