@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from math import hypot
-from typing import Iterable
 
 
 class BuildingKind(StrEnum):
