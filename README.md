@@ -1,70 +1,65 @@
 # SimCity AI Mayor
 
-MuMu 模拟器上的《模拟城市：我是市长》自动化工程。
+MuMu 模拟器上的《模拟城市：我是市长》自动化与城市布局优化工程。
 
-当前仓库按 **V1.3 Architecture Freeze / Construction Baseline** 施工。目标是先证明：
-**真实状态可观测 → Keeper 失效安全 → 单线程 ADB 执行 → Fresh-State 验证 →
-异常可停止/恢复**，而不是先追求高产量。
-
-## 当前硬约束
-
-- 默认 `DRY_RUN`；未通过 Gate 的 Task 不执行。
-- Keeper 对页面采用**白名单**：新增 `ScreenType` 默认拒绝。
-- `device_id` 贯穿 ActionRequest、ADB、数据库和运行时状态。
-- 同一设备只有一个有界 ADB 写队列，并维护单调 `seq`。
-- 业务 ADB 输入只能经 `QueueBoundAdbWriter` 进入写队列；直接 `tap/swipe/back`、
-  `shell input` 和原始 `run(["shell", "input", ...])` 都会被拒绝。
-- `V0Orchestrator` 固定执行 `Observe → Plan → Keeper → Queue → Fresh Verify → Metrics`；
-  Verifier 非 `PASS` 时不得推进 Acceptance。
-- Observe、Plan 和动作后的 Fresh Observe 出现普通异常时，主循环返回 `OBSERVE_FAILED`、
-  进入 `RECOVER` 并参与指数退避，而不是让一次坏帧或瞬时 ADB 异常终结挂机进程；
-  动作已经执行但 Fresh Observe 失败时，该动作会明确记为失败样本。
-- `run()` 还有最后一道循环级异常兜底；连续未处理循环异常默认达到 5 次时，执行
-  `request_cancel → drain → metrics.flush` 后干净停止，避免真正的程序性错误被无限吞掉。
-- `Observation` 必须携带正数 `frame_id` 与 `captured_at`；动作后的 observation 必须同时满足
-  `after.frame_id > before.frame_id` 与 `after.captured_at > before.captured_at`，否则直接进入
-  `VERIFICATION_FAILED / RECOVER`，业务 Diff Verifier 不会执行。
-- 仓库容量使用 typed `StorageCapacity | None` 进入 `Observation`。`storage_used`、
-  `storage_capacity`、`storage_confidence` 由 `Observation.verifier_state()` 统一投影，Observer
-  不再通过自由字符串 dict 定义核心仓库 schema。
-- V0 仓库 OCR 可信阈值只有一个 Source of Truth：`V0Policy.min_ocr_confidence`；
-  Orchestrator 的人工清库恢复判定与生产/收取策略共享同一 policy。
-- 同一 `(task_id, action_name)` 上一次执行失败时，下一次自动视为 retry；不同 task 不共享
-  retry 链。Keeper 的 `max_retries_per_action` 因此是可达硬门禁，不再依赖 Planner 手工标记。
-- 主循环按结果分级退避：`NO_ACTION` 使用较长等待，`DENIED` 使用中等等待，连续观察/
-  执行/验证失败使用指数退避并封顶；`VERIFIED` 回到基础轮询间隔。
-- 动作等待超时使用**瞬时取消**：`request_cancel → drain → clear_cancel`。调用方只有在
-  在途原子动作真正结束后才拿回控制权，但写通道会重新打开，下一轮可重新 Observe/Plan。
-- 急停与 Ctrl+C 使用**闩锁取消**：写通道保持 cancelled，不自动 `clear_cancel`；Ctrl+C
-  映射为 `EMERGENCY_STOP` 并立即 flush RuntimeMetrics。
-- ADB 命令有硬超时；重启 adb-server 后 TCP MuMu 设备必须重新 `connect` 并等待上线。
-- V0 仓库 OCR 的 `confidence` 默认是 `0.0`；未显式给出可信度即视为不可信。
-- V0 默认逐件收取；批量收取留到 V1。
-- `WAIT_SESSION_CAP`、`WAIT_STORAGE_RESERVE`、`WAIT_OCR_UNTRUSTED` 语义分离。
-- session cap 与 V0 Acceptance 覆盖度均持久化到 SQLite，重启不能绕过额度或清空验收覆盖。
-- 每个 `device_id` 同时只允许一个 `RuntimeMetrics` owner；SQLite lease 防止多实例静默覆盖。
-- `ASSIST` 使用 `NEEDS_HUMAN`；主循环遇到该状态立即停止轮询，人工批准后仍必须重新经过
-  Keeper 其余硬门禁。
-- Verifier 保留 `UNKNOWN`；只有 `PASS` 能推进 Task，并保留全部失败原因用于复盘。
-- 急停通道健康状态必须可见；`stop.flag` 使用绝对路径。
-- 不设计反检测或规避平台风控能力。
-
-## 目录
+当前工程分成两条已经接通的软件链路：
 
 ```text
-src/simcity_ai_mayor/
-  core/          状态、模型、V0 策略与验收口径
-  device/        ADB 命令与单设备串行队列
-  executor/      Keeper 安全闸门
-  verifier/      State/Diff 可组合断言
-  storage/       SQLite session + acceptance 持久化
-  runtime/       急停、指标与 V0 Orchestrator 主循环骨架
-  phase1/        Phase -1a 环境探测
-docs/            Gate 文档骨架
-playbooks/       交互剧本
-data/phase_minus1/  采样目录说明
-tests/           单元测试
+A. V0 自动化闭环
+ADB 截图 → 页面/工厂/仓库识别 → Planner → Keeper → ADB Queue
+→ Fresh Screenshot → Verifier → Metrics / Recovery
+
+B. 地图布局链路
+真实地图截图 → 仿射网格标定 → 道路/建筑模板识别 → 多视野合并 → CityMap
+→ LayoutScorer → 建筑+道路联合优化 → ConstructionPlan
 ```
+
+项目仍坚持 **fail-closed**：无法确认页面、仓库状态、地图识别或施工条件时，不猜、不点击。
+
+## 当前状态
+
+### V0 自动化软件层
+
+已实现：
+
+- `AdbScreenshotObserver` 真实 ADB 截图；
+- `frame_id + captured_at` Fresh-State 机械校验；
+- 页面多锚点 NCC 识别；
+- FactoryState 模板识别；
+- 固定 ROI + RapidOCR 仓库 `used/capacity`；
+- OCR 原始置信度与跨帧 measurement confidence 分离；
+- 仓库 capacity 异常下降、无动作解释的 `used` 跳变 fail-closed；
+- `CITY → FACTORY` 导航动作；
+- 单件收取与基础生产；
+- Keeper 风险门禁、retry、cooldown、failure-rate、动作速率限制；
+- 单设备单 ADB writer queue；
+- 动作 timeout 的 cancel→drain→reopen；
+- Ctrl+C / stop.flag / Windows Ctrl+Alt+F12 急停闩锁；
+- Observe / Plan / Fresh Observe 异常恢复与指数退避；
+- `run_for(duration_seconds)` 有界运行；
+- SQLite session cap、Acceptance、lease；
+- 生产配额采用“写入前保守预留；可信 fresh verifier 明确 FAIL 才回滚”，避免崩溃/超时漏记；
+- CLI：`simcity-v0`。
+
+### 地图布局软件层
+
+已实现：
+
+- 正交 `GridCalibration` 与等距/斜视 `AffineGridCalibration`；
+- `TemplateRoadDetector`；
+- `TemplateBlockedCellDetector`；
+- `TemplateBuildingDetector`；
+- 多视野 `CityMapMerger`，重叠矛盾检测 fail-closed；
+- `CityMap` 数字城市模型；
+- `LayoutScorer` 多目标评分；
+- 建筑位置 `LayoutOptimizer`；
+- 道路接入修复与冗余道路安全删除 `RoadTopologyOptimizer`；
+- 建筑+道路 `JointLayoutOptimizer`；
+- `ConstructionPlanner` 生成 BUILD_ROAD / MOVE_BUILDING / REMOVE_ROAD 依赖图；
+- 建筑互换等依赖环不伪造顺序，而是标记 `requires_staging=true`；
+- CLI：`simcity-map-scan`、`simcity-layout`。
+
+“最佳布局”当前含义是：**在配置的评分目标、约束和有限搜索空间内找到最佳候选**，不是数学意义上证明的全局最优。
 
 ## 安装
 
@@ -76,102 +71,287 @@ python -m venv .venv
 python -m pip install -e ".[dev]"
 ```
 
-## Phase -1a 基础探测
-
-`--package` 是 Gate 必填项。建议 RDP/无人值守机器使用 `--watch-seconds`，
-在观察窗口中主动做 RDP 断连/重连测试。
+真机 OCR / vision：
 
 ```bash
+python -m pip install -e ".[vision]"
+```
+
+`vision` extra 显式包含 `numpy`、`opencv-python` 与 `rapidocr-onnxruntime`。
+
+## Phase -1a：MuMu 环境基线
+
+真实设备首次接线先运行：
+
+```bat
 python -m simcity_ai_mayor.phase1.probe ^
-  --device-id 127.0.0.1:7555 ^
+  --device-id 127.0.0.1:<实际端口> ^
   --package <真实包名> ^
   --samples 100 ^
   --watch-seconds 120
 ```
 
-探测器自动记录 Android 版本、SDK、方向相关 dump、截图尺寸漂移、游戏版本、
-冻结帧比例和黑屏比例。长窗口观察采用流式统计，不保留全部帧哈希。MuMu 应用版本、
-窗口/DPI/RDP 行为仍需人工复核并进入基线文档。
+冻结：
 
-## V0 主循环骨架
+- ADB device id / MuMu 端口；
+- package / versionName；
+- Android / SDK；
+- screenshot 尺寸；
+- DPI / 方向；
+- 黑屏、冻结帧、RDP 断连/重连行为。
 
-`runtime/orchestrator.py` 已把基础设施接成一个最小可信闭环：
+不要把示例中的 `127.0.0.1:7555` 当成已验证真实端口。
+
+## Phase -1b：视觉与地图标定
+
+### 页面 / Factory / 仓库
+
+需要真实样本完成：
+
+- CITY / FACTORY 等页面锚点；
+- IDLE / PRODUCING / COMPLETED_COLLECTABLE / COMPLETED_STORAGE_BLOCKED 模板；
+- Storage ROI；
+- collect / production / enter-factory 点击坐标；
+- 白天、夜晚、昼夜过渡和负样本阈值统计；
+- RapidOCR engine confidence 与 measurement confidence 分布。
+
+模板匹配使用零均值 NCC，因此对整体亮度/对比度线性变化比原始 MAD 稳定，但 threshold 仍必须由真实样本标定。
+
+### 整城地图
+
+SimCity 地图使用斜视/等距视觉，真实扫描使用二维仿射格：
+
+```text
+P(x,y) = origin + x * X_basis + y * Y_basis
+```
+
+配置参考：
+
+```text
+config/map_scan.example.json
+```
+
+示例里的 origin、basis、offset、模板路径和 threshold 全部是占位结构，不是真实 SimCity 数据。
+
+详细契约见：
+
+```text
+docs/MAP_LAYOUT_PIPELINE.md
+```
+
+## V0 运行
+
+配置参考：
+
+```text
+config/v0.example.json
+```
+
+完成 Phase -1a / -1b 后，先保持 `DRY_RUN`：
+
+```bat
+simcity-v0 --config config\v0.local.json --duration-seconds 600
+```
+
+再逐步进入 `ASSIST`，最后才进入 `AUTO`。
+
+主循环：
 
 ```text
 Fresh Observe
 ↓
 Plan
 ↓
-Keeper + RuntimeMetrics.rate_window
+Keeper
 ↓
 QueueBoundAdbWriter
 ↓
-等待原子动作完成
+等待原子动作结束
 ↓
-再次 Fresh Observe
+Fresh Observe
 ↓
-Freshness Gate（frame_id + captured_at）
+frame_id / captured_at Freshness Gate
 ↓
 Diff Verifier
 ↓
-PASS 才记录收取/生产成功与 FactoryState 转换
+PASS 才推进 Acceptance
 ```
 
-当前 `Observer` 与 `Planner` 是协议接口，故意没有伪造游戏视觉实现。真机 Observer 每次
-调用都必须真正获取新的 ADB 截图，并为该捕获生成单调递增的 `frame_id` 与 `captured_at`。
-如果动作后返回旧帧，Orchestrator 会在业务 verifier 前机械拒绝。单元测试已经使用真实
-Keeper、RuntimeMetrics 与 DeviceCommandQueue 验证接线；这不等于已经在 MuMu 真机上
-完成端到端验收。
+## 仓库可信度
 
-Observe/Plan/Fresh Observe 的普通异常会被转换为 `OBSERVE_FAILED`，进入 `RECOVER` 后由
-下一轮重新取状态；`OBSERVE_FAILED` 与执行/验证失败共用指数退避。若错误发生在动作已经
-落地之后的 Fresh Observe，该动作会记为失败，确保 retry、失败率和熔断不会被坏帧绕过。
-`run()` 对真正漏出 `run_once()` 的异常设置独立连续错误计数，默认 5 次后取消并排空写队列、
-flush RuntimeMetrics 后退出。
+仓库识别现在分两层：
 
-仓库状态不再由 `state["storage_used"]` 等自由字符串作为主数据源。Observer 应构造
-`StorageCapacity(used, capacity, confidence)` 并放入 `Observation.storage`；Orchestrator 仅在
-调用通用 Diff Verifier 时，通过 `verifier_state()` 投影兼容字段。即使 `state` 中出现冲突的
-仓库键值，也以 typed `StorageCapacity` 为准。
+```text
+RapidOCR engine confidence
+↓
+ValidatedStorageReader
+↓
+跨帧稳定性 + 合法转移约束
+↓
+measurement confidence
+↓
+StorageCapacity.confidence
+```
 
-`RuntimeMetrics` 会按 `(task_id, action_name)` 追踪上一执行结果。第一次失败后的下一次尝试
-自动记为 retry；初次执行加最多 3 次 retry 后，默认 Keeper 会以 `RETRY_LIMIT` 拒绝继续
-执行。不同 task 即使 action 名相同，也不会互相消耗 retry 配额。
+重复相同读数会融合测量置信度；例如两帧独立 `0.95` 可形成高于 `0.99` 的 measurement confidence。
 
-`run()` 的等待不再是固定节拍。默认以 `idle_sleep_seconds` 为基准：`NO_ACTION` 为 5 倍、
-`DENIED` 为 3 倍；连续 `OBSERVE_FAILED / EXECUTION_FAILED / VERIFICATION_FAILED` 按
-1、2、4、8… 倍指数退避，并由 `LoopBackoffPolicy.max_failure_seconds` 封顶。成功验证后
-失败阶数归零。
+状态约束包括：
 
-`BLOCKED_STORAGE` 的恢复信号也由主循环机械判定：上一观察进入
-`BLOCKED_STORAGE` 后保持 recovery-pending；只有后续 observation 已离开阻塞、存在 typed
-`StorageCapacity`、`free > 0`，且 `storage.confidence >= V0Policy.min_ocr_confidence`，才会
-记录 `manual_clear_recovered`。低置信度 OCR 或仅页面跳转都不算人工清库恢复。
+- `capacity > 0`；
+- `0 <= used <= capacity`；
+- capacity 不允许无解释下降；
+- 收取前登记期望 `used +1`；
+- 无动作解释的 `used` 跳变降为不可信；
+- 从已确认“仓库满”状态人工清库后的下降允许安全 rebase。
+
+`V0Policy.min_ocr_confidence` 当前仍需 Phase -1b 真机样本校准，不应把示例值 `0.99` 视为最终结论。
+
+## 生产配额语义
+
+为了防止“设备动作发生但程序崩溃导致额度漏记”，生产动作在 ADB 点击前先持久化预留额度：
+
+```text
+reserve quota
+→ ADB tap
+→ fresh verify
+```
+
+只有在**可信 fresh frame + verifier 明确 FAIL**时才释放额度。Timeout、Fresh Observe 失败、UNKNOWN 等状态保持预留，因为设备真实结果无法确认。
+
+## 地图扫描
+
+真实截图、真实标定和真实模板准备好后：
+
+```bat
+simcity-map-scan ^
+  --config config\map_scan.local.json ^
+  --output data\city_map.json
+```
+
+扫描器：
+
+```text
+截图
+→ AffineGridCalibration
+→ 道路格模板扫描
+→ 建筑原点模板扫描
+→ blocked cell 扫描
+→ 局部 CityMap
+→ 多视野 CityMapMerger
+→ city_map.json
+```
+
+如果重叠视野对同一 footprint 给出互相冲突的建筑结果，合并器直接失败，不投票猜测。
+
+## 布局优化
+
+可以直接对 `CityMap JSON` 做离线规划：
+
+```bat
+simcity-layout ^
+  --map data\city_map.json ^
+  --mode BALANCED ^
+  --output data\layout_plan.json
+```
+
+支持目标模式：
+
+- `BALANCED`
+- `POPULATION`
+- `SERVICE`
+- `BEAUTY`
+- `EXPANSION`
+
+当前评分维度：
+
+- road access；
+- service coverage；
+- beauty coverage；
+- pollution separation；
+- traffic efficiency；
+- zone compactness；
+- expansion space；
+- road efficiency；
+- move penalty。
+
+道路优化采用保守策略：
+
+1. 无道路接入建筑 → BFS 补最短安全 connector；
+2. 删除道路必须保持路网连通；
+3. 所有建筑仍需保留 road access；
+4. 总评分必须提升。
+
+因此当前不是任意道路拓扑的全局穷举，而是安全的局部联合优化。
+
+## ConstructionPlan
+
+布局输出不仅有最终坐标，还会生成施工依赖：
+
+```text
+BUILD_ROAD
+MOVE_BUILDING
+REMOVE_ROAD
+```
+
+规则包括：
+
+- 建筑目标格被另一待移动建筑占用 → 等对方先移走；
+- 新道路位于建筑旧 footprint → 先移动建筑；
+- 建筑最终接入依赖新道路 → 先建道路；
+- 拆路默认放在所有迁移和新增道路之后。
+
+若存在建筑互换导致的依赖环，输出：
+
+```text
+requires_staging = true
+```
+
+系统不会生成实际上无法执行的“直接互换”步骤。
+
+## 当前还缺什么
+
+代码已经形成完整的软件链路，但**还不能宣称真机整城自动改造完成**。剩余依赖真实游戏数据的工作主要是：
+
+1. Phase -1a 真机环境冻结；
+2. Phase -1b 页面、仓库、地图仿射参数与模板采样；
+3. 用人工标注真实截图测 precision / recall，并校准 threshold；
+4. 建立真实 `BUILDING_CATALOG`：占地、人口、覆盖、污染、交通等；
+5. 实现真机 `MOVE_BUILDING / BUILD_ROAD / REMOVE_ROAD` ADB playbook；
+6. 每个施工步骤做 fresh screenshot + map-diff verify；
+7. 自动 staging 求解；
+8. 建筑跨帧身份 reconciliation；
+9. 最后执行 V0 4 小时真机 Gate 与布局施工专项验收。
+
+这些步骤不能靠猜坐标替代真实采样。
+
+## 运行时硬约束
+
+- 默认 `DRY_RUN`；
+- Keeper 页面白名单，未知页面默认拒绝；
+- 一个 `device_id` 只有一个 ADB writer queue；
+- 原始 ADB input 绕过 writer 会被拒绝；
+- Verifier 只有 `PASS` 能推进；
+- timeout 使用瞬时 cancel→drain→reopen；
+- emergency stop / Ctrl+C 保持 writer cancelled 闩锁；
+- `NEEDS_HUMAN` 停止主循环；
+- `OBSERVE_FAILED / EXECUTION_FAILED / VERIFICATION_FAILED` 使用指数退避；
+- retry 按 `(task_id, action_name)` 作用域；
+- `RETRY_LIMIT` 会启动显式 cooldown；
+- session cap 与 Acceptance 持久化，重启不能绕过；
+- `RECOVER / BLOCKED_STORAGE / PAUSED / EMERGENCY_STOP / STOPPED` 不计有效运行时间；
+- 不设计反检测或规避平台风控能力。
 
 ## V0 Gate
 
-V0 验收不是“没有报错”即可通过，默认同时要求：
+V0 真机验收仍要求至少：
 
 - 有效运行时间 `>= 4h`；
 - 收取成功 `>= 10`；
 - 生产成功 `>= 10`；
 - 四条核心 FactoryState 转换各 `>= 3`；
-- 人工制造并正确检测 `BLOCKED_STORAGE`；
-- 人工清库后成功重新 Observe/Plan；
-- 误购、误售、高级货币消费、无限循环、旧状态动作、ADB 写入乱序均为 `0`。
-
-`RuntimeMetrics` 使用 `time.monotonic()` 累加有效运行时间，维护固定的 60 秒动作速率窗口
-和固定的 300 秒失败率窗口，并定期把 Acceptance tracker 写入同一个 SQLite Store。
-`event_retention_seconds` 只控制事件保留量，不改变“5 分钟失败率”的语义。
-
-计时口径固定如下：
-
-- `WAIT_SESSION_CAP` **计入**有效运行时间：这是 V0 的设计终态，不需要人工干预；
-- `BLOCKED_STORAGE` **不计入**有效运行时间，但单独累计 `blocked_storage_seconds`；
-- `PAUSED / EMERGENCY_STOP / STOPPED` 同样不计入有效运行时间。
-
-每个 `device_id` 同一时刻只允许一个 `RuntimeMetrics` owner。owner 通过 SQLite lease 周期续租；
-异常退出后 lease 到期可被新进程接管，从而避免两个进程互相覆盖 Acceptance 行。
+- 强制制造并检测 `BLOCKED_STORAGE`；
+- 人工清库后恢复；
+- 误购、误售、高级货币消费、无限循环、旧状态动作、ADB 写乱序均为 `0`。
 
 ## 测试
 
@@ -180,12 +360,38 @@ ruff check src tests
 pytest
 ```
 
-CI 同时运行 Python `3.11` / `3.12`，并覆盖 `ubuntu-latest` 与 `windows-latest`。
+CI 矩阵覆盖：
+
+- Ubuntu + Python 3.11
+- Ubuntu + Python 3.12
+- Windows + Python 3.11
+- Windows + Python 3.12
+
+当前代码批次已达到 **111 tests**。
+
+## 目录
+
+```text
+src/simcity_ai_mayor/
+  core/          状态、模型、V0 policy、Acceptance
+  device/        ADB 与单设备串行队列
+  executor/      Keeper
+  verifier/      State/Diff verifier
+  storage/       SQLite session / quota / acceptance
+  runtime/       V0 orchestrator、metrics、急停、组合根
+  planner/       V0 导航/收取/生产 Planner
+  vision/        Observer、OCR、页面模板、地图扫描与合并
+  city/          CityMap 数字城市模型与 JSON codec
+  layout/        scorer、建筑/道路联合优化、施工依赖图
+  phase1/        Phase -1a probe
+config/          V0 / map scan / layout 示例配置
+docs/            Gate 与地图布局文档
+data/            Phase -1a / -1b 数据目录
+tests/           回归测试
+```
 
 ## License
 
-仓库暂未选择开源许可证。由仓库所有者确定授权方式后再加入 `LICENSE`，避免代替所有者
-做不可逆的许可选择。
+仓库暂未选择开源许可证。由仓库所有者确定授权方式后再加入 `LICENSE`。
 
-> 账号与合规：在线游戏自动化可能违反游戏或平台规则。此工程不承诺账号安全，
-> 开发时应使用独立测试账号并自行核对适用条款。
+> 账号与合规：在线游戏自动化可能违反游戏或平台规则。工程不承诺账号安全；应使用独立测试账号并自行核对适用条款。
