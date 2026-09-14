@@ -27,6 +27,7 @@ from simcity_ai_mayor.vision.readers import (
     RapidOcrBackend,
     StorageRoiReader,
 )
+from simcity_ai_mayor.vision.storage_validation import ValidatedStorageReader
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -77,15 +78,21 @@ def run_app(config: AppConfig, *, duration_seconds: float | None = None) -> int:
             if config.vision.factory_rules
             else UnknownFactoryReader()
         )
-        storage_reader = (
-            StorageRoiReader(
+        storage_gate: ValidatedStorageReader | None = None
+        if config.vision.storage_roi is not None:
+            raw_storage_reader = StorageRoiReader(
                 roi=config.vision.storage_roi,
                 backend=RapidOcrBackend(),
                 enabled_screens=config.vision.storage_screens,
             )
-            if config.vision.storage_roi is not None
-            else NullStorageReader()
-        )
+            storage_gate = ValidatedStorageReader(
+                raw_storage_reader,
+                policy=config.vision.storage_validation,
+            )
+            storage_reader = storage_gate
+        else:
+            storage_reader = NullStorageReader()
+
         observer = AdbScreenshotObserver(
             runner=runner,
             screen_classifier=screen_classifier,
@@ -101,8 +108,10 @@ def run_app(config: AppConfig, *, duration_seconds: float | None = None) -> int:
             device_id=config.device_id,
             session_store=store,
             policy=config.policy,
+            enter_factory_tap=config.enter_factory_tap,
             collect_tap=config.collect_tap,
             production=config.production,
+            storage_gate=storage_gate,
         )
         keeper = Keeper(
             device_id=config.device_id,
