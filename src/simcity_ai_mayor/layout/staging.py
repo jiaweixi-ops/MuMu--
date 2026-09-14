@@ -123,8 +123,9 @@ class StagingSolver:
             else:
                 remaining.append(step)
 
+        sorted_remaining = tuple(sorted(remaining, key=lambda step: step.step_id))
         return StagingResolution(
-            ConstructionPlan(tuple(resolved_steps), tuple(sorted(remaining, key=lambda s: s.step_id))),
+            ConstructionPlan(tuple(resolved_steps), sorted_remaining),
             tuple(staging_points),
         )
 
