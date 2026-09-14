@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from math import hypot
 from statistics import fmean
-from typing import Mapping
 
 from simcity_ai_mayor.city.map_model import BuildingKind, CityMap, GridPoint, PlacedBuilding
 
@@ -307,4 +307,8 @@ class LayoutScorer:
         total_weight = sum(weights)
         if total_weight <= 0:
             return 0.0
-        return sum(value * weight for value, weight in zip(values, weights, strict=True)) / total_weight
+        weighted_sum = sum(
+            value * weight
+            for value, weight in zip(values, weights, strict=True)
+        )
+        return weighted_sum / total_weight
