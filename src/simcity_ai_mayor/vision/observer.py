@@ -103,7 +103,7 @@ class ObserverFrameMetadata:
     height: int
     mode: str
 
-    def as_state(self) -> Mapping[str, Any]:
+    def as_state(self) -> dict[str, Any]:
         return {
             "frame_width": self.width,
             "frame_height": self.height,
@@ -153,6 +153,17 @@ class AdbScreenshotObserver:
         )
 
         metadata = ObserverFrameMetadata(image.width, image.height, image.mode)
+        state = metadata.as_state()
+        diagnostics = getattr(self.storage_reader, "diagnostics", None)
+        if diagnostics is not None:
+            state.update(
+                {
+                    "storage_raw_confidence": diagnostics.raw_confidence,
+                    "storage_measurement_confidence": diagnostics.measurement_confidence,
+                    "storage_stable_frames": diagnostics.stable_frames,
+                    "storage_validation_reason": diagnostics.reason,
+                }
+            )
         observation = Observation(
             device_id=self.device_id,
             frame_id=frame_id,
@@ -161,7 +172,7 @@ class AdbScreenshotObserver:
             automation_state=automation_state,
             storage=storage,
             factory_state=factory_state,
-            state=metadata.as_state(),
+            state=state,
         )
         self._frame_id = frame_id
         return observation
