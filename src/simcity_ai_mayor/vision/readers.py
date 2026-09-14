@@ -3,13 +3,13 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from math import fsum, sqrt
 from pathlib import Path
 from typing import Protocol
 
 from PIL import Image
 
 from simcity_ai_mayor.core.models import FactoryState, ScreenType, StorageCapacity
+from simcity_ai_mayor.vision.similarity import NccTemplateProfile
 
 _RATIO_RE = re.compile(r"(?<!\d)(\d{1,6})\s*[/／]\s*(\d{1,6})(?!\d)")
 
@@ -196,35 +196,10 @@ class _LoadedAnchor:
             raise VisionConfigError(
                 f"template {path} size {template.size} != ROI size {expected}"
             )
-        self.template = template
-        self._template_pixels = tuple(float(value) for value in template.tobytes())
-        self._template_mean = fsum(self._template_pixels) / len(self._template_pixels)
-        self._template_centered = tuple(
-            value - self._template_mean for value in self._template_pixels
-        )
-        self._template_energy = fsum(value * value for value in self._template_centered)
+        self._profile = NccTemplateProfile.from_image(template)
 
     def score(self, image: Image.Image) -> float:
-        """Return zero-mean normalized cross-correlation in the [0, 1] range."""
-        sample = self.spec.roi.crop(image).convert("L")
-        sample_pixels = tuple(float(value) for value in sample.tobytes())
-        sample_mean = fsum(sample_pixels) / len(sample_pixels)
-        sample_centered = tuple(value - sample_mean for value in sample_pixels)
-        sample_energy = fsum(value * value for value in sample_centered)
-
-        if self._template_energy == 0.0 or sample_energy == 0.0:
-            return 1.0 if sample_pixels == self._template_pixels else 0.0
-
-        numerator = fsum(
-            sample_value * template_value
-            for sample_value, template_value in zip(
-                sample_centered,
-                self._template_centered,
-                strict=True,
-            )
-        )
-        correlation = numerator / sqrt(sample_energy * self._template_energy)
-        return max(0.0, min(1.0, correlation))
+        return self._profile.score(self.spec.roi.crop(image))
 
 
 class _LoadedRule:
