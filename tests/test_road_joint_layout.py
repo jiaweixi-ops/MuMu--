@@ -12,7 +12,7 @@ from simcity_ai_mayor.layout.road_optimizer import (
     RoadOptimizerConfig,
     RoadTopologyOptimizer,
 )
-from simcity_ai_mayor.layout.scorer import LayoutScorer, LayoutWeights
+from simcity_ai_mayor.layout.scorer import LayoutScorer
 
 
 def building(building_id: str, x: int, y: int) -> PlacedBuilding:
@@ -92,7 +92,7 @@ def test_joint_optimizer_never_scores_below_original_layout() -> None:
             ),
         ),
     )
-    scorer = LayoutScorer(LayoutWeights.for_mode.__func__(None) if False else LayoutWeights())
+    scorer = LayoutScorer()
     building_optimizer = LayoutOptimizer(
         scorer,
         config=LayoutOptimizerConfig(max_passes=2, candidate_limit_per_building=100),
