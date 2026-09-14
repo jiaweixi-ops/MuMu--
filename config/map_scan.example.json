@@ -1,0 +1,44 @@
+{
+  "global_size": [40, 40],
+  "tiles": [
+    {
+      "image": "../data/phase_minus1/map_tiles/tile_00.png",
+      "grid_origin": [0, 0],
+      "calibration": {
+        "size": [20, 20],
+        "origin_px": [640.0, 140.0],
+        "x_basis_px": [24.0, 12.0],
+        "y_basis_px": [-24.0, 12.0]
+      }
+    }
+  ],
+  "road_templates": [
+    {
+      "template": "../data/phase_minus1/templates/map/road_a.png",
+      "offset_px": [-24, -12],
+      "threshold": 0.92
+    },
+    {
+      "template": "../data/phase_minus1/templates/map/road_b.png",
+      "offset_px": [-24, -12],
+      "threshold": 0.92
+    }
+  ],
+  "blocked_templates": [],
+  "building_templates": [
+    {
+      "id_prefix": "residential",
+      "prototype": {
+        "id": "residential-prototype",
+        "kind": "RESIDENTIAL",
+        "size": [2, 2],
+        "population": 0,
+        "traffic_load": 1.0,
+        "movable": true
+      },
+      "template": "../data/phase_minus1/templates/map/residential.png",
+      "offset_px": [-48, -80],
+      "threshold": 0.92
+    }
+  ]
+}
